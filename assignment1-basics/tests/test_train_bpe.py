@@ -47,6 +47,14 @@ def test_train_bpe():
             )
             for merge_token_1, merge_token_2 in gpt2_reference_merges
         ]
+    
+    # Save reference_merges to a txt file
+    with open("merges_saved.txt", "w", encoding="utf-8") as f_out:
+        for merge in merges:
+            # Convert bytes to string for saving
+            merge_str = " ".join([merge[0].decode("latin1"), merge[1].decode("latin1")])
+            f_out.write(merge_str + "\n")
+
     assert merges == reference_merges
 
     # Compare the vocab to the expected output vocab
