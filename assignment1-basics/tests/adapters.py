@@ -562,6 +562,7 @@ def get_tokenizer(
     raise NotImplementedError
 
 
+# uv run pytest tests/test_train_bpe.py
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,

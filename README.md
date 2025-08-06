@@ -1,7 +1,19 @@
 Assignments and materials for CS336(2025).
 ---
 # CS336日志
-
+README记录我的学习历程，CS336.md记录我的学习笔记
 ## 7.30 - 8.4
 
-这几天一直在做BPETokenizer,但死活过不了测试，后面没耐心了,从https://github.com/Spectual/stanford-cs336-a1 copy了,但是只过了第二个测试,难崩。
+这几天一直在做BPETokenizer，但死活过不了测试，后面没耐心了,从https://github.com/Spectual/stanford-cs336-a1 copy了，但是只过了第二个测试,难崩。
+
+## 8.5
+
+参考了https://github.com/wingAGI/cs336-assignments-answer 可以通过第三个测试了，但第一个测试还是差了一点（1.8s）。
+
+一开始代码是自己绞尽脑汁，耗时耗力写的，觉得思路都正确了，但最后总是有或是细枝末节的错误，或是整体思路的偏移，导致测试通过不了，便去搜寻他人的答案。
+
+有时候觉得copy很有罪恶感，但是自己又何尝没有努力过呢，人与人之间编程的差距是很大的但不直观，换位到和NBA球员的差距，或许就能和自己和解了。
+
+希望后面代码能力能变强吧，大二就要结束了。
+
+几把的，别人怎么会知道那么多奇奇怪怪的库，见都没见过，牛魔的。
