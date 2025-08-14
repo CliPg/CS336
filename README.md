@@ -17,3 +17,15 @@ README记录我的学习历程，CS336.md记录我的学习笔记
 希望后面代码能力能变强吧，大二就要结束了。
 
 几把的，别人怎么会知道那么多奇奇怪怪的库，见都没见过，牛魔的。
+
+## 8.11
+
+写完Tokenizer运行
+```
+uv run pytest tests/test_tokenizer.py
+```
+会报错
+```
+FAILED tests/test_tokenizer.py::test_roundtrip_empty - KeyError: '臓'
+```
+有点奇怪，从`gpt_vocab.json`和`gpt2_merges.txt`都没有发现**臓**这个字符

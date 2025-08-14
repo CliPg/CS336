@@ -4,6 +4,7 @@ from typing import BinaryIO
 from typing import Iterable, Iterator, Dict, Tuple
 from collections import defaultdict
 from multiprocessing import Process, Queue
+import pickle
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 def to_bytes_tuple(word: str) -> Tuple[bytes]:
@@ -123,7 +124,22 @@ def train_bpe(
     return vocab, merges
 
 
-class BPETokenizer:
+def train_bpe_tinystories():
+
+    input_path = '..\data\TinyStoriesV2-GPT4-train.txt'
+    vocab_size = 10000
+    special_tokens = ['<|endoftext|>']
+    
+    vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
+    
+    with open(r'..\data\vocab.pkl', 'wb') as f:
+        pickle.dump(vocab, f)
+
+    with open(r'..\data\merges.pkl', 'wb') as f:
+        pickle.dump(merges, f)
+
+
+class Tokenizer:
     def __init__(
         self,
         vocab: dict[int, bytes],
@@ -155,6 +171,16 @@ class BPETokenizer:
                 new_id = len(self.vocab)
                 self.vocab[new_id] = token_bytes
                 self.byte_to_token_id[token_bytes] = new_id
+
+    def from_files(self, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
+
+        with open(vocab_filepath, 'rb') as f:
+            vocab = pickle.load(f)
+
+        with open(merges_filepath, 'rb') as f:
+            merges = pickle.load(f)
+
+        return Tokenizer(vocab, merges)
 
     def encode(self, text: str) -> list[int]:
         """
@@ -303,35 +329,3 @@ class BPETokenizer:
 
         return word
 
-
-def main():
-    file_path = "./data/corpus.en"
-    vocab_size = 500
-    # special_tokens = ["<|endoftext|>"]
-    special_tokens = ["<|endoftext|>", "<|endoftext|><|endoftext|>"]
-
-    vocab, merges = train_bpe(file_path, vocab_size, special_tokens)
-    tokenizer = BPETokenizer(vocab, merges, special_tokens)
-    # print(merges)
-
-    test_string = "Hello, how <|endoftext|><|endoftext|> are you?<|endoftext|>"
-    encoded = tokenizer.encode(test_string)
-    print("encoded:",encoded)
-    decoded = [tokenizer.decode([x]) for x in encoded]
-    print("decoded:", decoded)
-
-    print(test_string == decoded)
-
-    # print(vocab)
-
-def test():
-    import tiktoken
-    tokenizer = tiktoken.get_encoding('gpt2')
-    test_string = "Hello, how <|endoftext|><|endoftext|> are you?<|endoftext|>"
-    ids = tokenizer.encode(test_string, allowed_special={"<|endoftext|><|endoftext|>", "<|endoftext|>"})
-    decoded = [tokenizer.decode([x]) for x in ids]
-    print(decoded)
-
-if __name__ == "__main__":
-    main()
-    # test()

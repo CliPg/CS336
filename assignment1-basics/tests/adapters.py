@@ -8,8 +8,15 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
-from cs336_basics.BPETokenizer import train_bpe, BPETokenizer
+from cs336_basics.BPETokenizer import train_bpe, Tokenizer
+from cs336_basics.Linear import Linear
+from cs336_basics.Embedding import Embedding
+from cs336_basics.RMSNorm import rmsnorm
+from cs336_basics.PWFF import positionwise_feedforward
+from cs336_basics.RoPE import rope
+from cs336_basics.MSA import softmax, scaled_dot_product_attention, multihead_self_attention
 
+# uv run pytest -k test_linear
 def run_linear(
     d_in: int,
     d_out: int,
@@ -29,9 +36,12 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    model = Linear(d_in, d_out)
+    model.W.data.copy_(weights)
 
+    return model(in_features)
 
+# uv run pytest -k test_embedding
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -51,9 +61,12 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    model = Embedding(vocab_size, d_model)
+    model.embedding_matrix.data.copy_(weights)
 
+    return model(token_ids)
 
+# uv run pytest -k test_swiglu
 def run_swiglu(
     d_model: int,
     d_ff: int,
@@ -83,9 +96,15 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    model = positionwise_feedforward(d_model, d_ff)
+    model.W1.data.copy_(w1_weight)
+    model.W2.data.copy_(w2_weight)
+    model.W3.data.copy_(w3_weight)
 
+    return model(in_features)
 
+# uv run pytest -k test_scaled_dot_product_attention
+# uv run pytest -k test_4d_scaled_dot_product_attention
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -104,9 +123,9 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask)
 
-
+# uv run pytest -k test_multihead_self_attention
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
@@ -138,7 +157,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    model = multihead_self_attention(d_model, num_heads)
+    model.Qproj.W.data.copy_(q_proj_weight)
+    model.Kproj.W.data.copy_(k_proj_weight)
+    model.Vproj.W.data.copy_(v_proj_weight)
+    model.MSA.W.data.copy_(o_proj_weight)
+
+    return model(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -178,9 +203,16 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    model = multihead_self_attention(d_model, num_heads, use_rope=True, max_seq_len=max_seq_len, 
+                                   theta=theta, token_positions=token_positions)
+    model.Qproj.W.data.copy_(q_proj_weight)
+    model.Kproj.W.data.copy_(k_proj_weight)
+    model.Vproj.W.data.copy_(v_proj_weight)
+    model.MSA.W.data.copy_(o_proj_weight)
 
+    return model(in_features)
 
+# uv run pytest -k test_rope
 def run_rope(
     d_k: int,
     theta: float,
@@ -200,7 +232,9 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    model = rope(theta, d_k, max_seq_len)
+
+    return model(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -357,7 +391,7 @@ def run_transformer_lm(
     """
     raise NotImplementedError
 
-
+# uv run pytest -k test_rmsnorm
 def run_rmsnorm(
     d_model: int,
     eps: float,
@@ -378,7 +412,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    model = rmsnorm(d_model, eps)
+    model.gain.data.copy_(weights)
+
+    return model(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -417,7 +454,7 @@ def run_get_batch(
     """
     raise NotImplementedError
 
-
+# uv run pytest -k test_softmax_matches_pytorch
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
     """
     Given a tensor of inputs, return the output of softmaxing the given `dim`
@@ -431,7 +468,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -539,6 +576,7 @@ def run_load_checkpoint(
     raise NotImplementedError
 
 
+# uv run pytest tests/test_tokenizer.py
 def get_tokenizer(
     vocab: dict[int, bytes],
     merges: list[tuple[bytes, bytes]],
@@ -559,7 +597,7 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    return Tokenizer(vocab, merges, special_tokens)
 
 
 # uv run pytest tests/test_train_bpe.py
