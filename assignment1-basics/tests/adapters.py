@@ -14,7 +14,15 @@ from cs336_basics.Embedding import Embedding
 from cs336_basics.RMSNorm import rmsnorm
 from cs336_basics.PWFF import positionwise_feedforward
 from cs336_basics.RoPE import rope
-from cs336_basics.MSA import softmax, scaled_dot_product_attention, multihead_self_attention
+from cs336_basics.MSA import softmax, scaled_dot_product_attention, multihead_self_attention, multihead_self_attention_with_rope
+from cs336_basics.TB import transformer_block
+from cs336_basics.TLM import transformer_lm
+from cs336_basics.CrossEntropy import cross_entropy
+from cs336_basics.AdamW import adamw_optimizer
+from cs336_basics.LRS import learning_rate_schedule
+from cs336_basics.GC import gradient_clipping
+from cs336_basics.DL import data_loading
+from cs336_basics.Checkpointing import save_checkpoint, load_checkpoint
 
 # uv run pytest -k test_linear
 def run_linear(
@@ -157,7 +165,10 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    model = multihead_self_attention(d_model, num_heads)
+    d_k, d_in = q_proj_weight.shape
+    d_v = o_proj_weight.shape[-1]
+
+    model = multihead_self_attention(d_model, num_heads, d_k, d_v, d_in)
     model.Qproj.W.data.copy_(q_proj_weight)
     model.Kproj.W.data.copy_(k_proj_weight)
     model.Vproj.W.data.copy_(v_proj_weight)
@@ -203,8 +214,11 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    model = multihead_self_attention(d_model, num_heads, use_rope=True, max_seq_len=max_seq_len, 
-                                   theta=theta, token_positions=token_positions)
+    d_k, d_in = q_proj_weight.shape
+    d_v = o_proj_weight.shape[-1]
+    
+    model = multihead_self_attention_with_rope(d_model, num_heads, d_k, d_v, d_in, max_seq_len, 
+                                   theta, token_positions)
     model.Qproj.W.data.copy_(q_proj_weight)
     model.Kproj.W.data.copy_(k_proj_weight)
     model.Vproj.W.data.copy_(v_proj_weight)
@@ -236,7 +250,7 @@ def run_rope(
 
     return model(in_query_or_key, token_positions)
 
-
+# uv run pytest -k test_transformer_block
 def run_transformer_block(
     d_model: int,
     num_heads: int,
@@ -307,9 +321,20 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    model = transformer_block(d_model, num_heads, d_ff, max_seq_len, theta)
+    model.msa_model.Qproj.W.data.copy_(weights['attn.q_proj.weight'])
+    model.msa_model.Kproj.W.data.copy_(weights['attn.k_proj.weight'])
+    model.msa_model.Vproj.W.data.copy_(weights['attn.v_proj.weight'])
+    model.msa_model.MSA.W.data.copy_(weights['attn.output_proj.weight'])
+    model.rmsnorm_model1.gain.data.copy_(weights['ln1.weight'])
+    model.rmsnorm_model2.gain.data.copy_(weights['ln2.weight'])
+    model.pwff_model.W1.data.copy_(weights['ffn.w1.weight'])
+    model.pwff_model.W2.data.copy_(weights['ffn.w2.weight'])
+    model.pwff_model.W3.data.copy_(weights['ffn.w3.weight'])
 
+    return model(in_features)
 
+# uv run pytest -k test_transformer_lm
 def run_transformer_lm(
     vocab_size: int,
     context_length: int,
@@ -388,9 +413,25 @@ def run_transformer_lm(
     Returns:
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
-    """
-    raise NotImplementedError
+    """    
+    model = transformer_lm(d_model, num_heads, d_ff, rope_theta, vocab_size, context_length, num_layers)
+    
+    model.embedding_model.embedding_matrix.data.copy_(weights["token_embeddings.weight"])
+    for layer_idx in range(num_layers):
+        model.transformer_layers[layer_idx].msa_model.Qproj.W.data.copy_(weights[f'layers.{layer_idx}.attn.q_proj.weight'])
+        model.transformer_layers[layer_idx].msa_model.Kproj.W.data.copy_(weights[f"layers.{layer_idx}.attn.k_proj.weight"])
+        model.transformer_layers[layer_idx].msa_model.Vproj.W.data.copy_(weights[f"layers.{layer_idx}.attn.v_proj.weight"])
+        model.transformer_layers[layer_idx].msa_model.MSA.W.data.copy_(weights[f"layers.{layer_idx}.attn.output_proj.weight"])
+        model.transformer_layers[layer_idx].rmsnorm_model1.gain.data.copy_(weights[f"layers.{layer_idx}.ln1.weight"])
+        model.transformer_layers[layer_idx].pwff_model.W1.data.copy_(weights[f"layers.{layer_idx}.ffn.w1.weight"])
+        model.transformer_layers[layer_idx].pwff_model.W2.data.copy_(weights[f"layers.{layer_idx}.ffn.w2.weight"])
+        model.transformer_layers[layer_idx].pwff_model.W3.data.copy_(weights[f"layers.{layer_idx}.ffn.w3.weight"])
+        model.transformer_layers[layer_idx].rmsnorm_model2.gain.data.copy_(weights[f"layers.{layer_idx}.ln2.weight"])
 
+    model.rmsnorm_model.gain.data.copy_(weights["ln_final.weight"])
+    model.out_put_proj.W.data.copy_(weights["lm_head.weight"])
+
+    return model(in_indices)
 # uv run pytest -k test_rmsnorm
 def run_rmsnorm(
     d_model: int,
@@ -431,7 +472,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """
     raise NotImplementedError
 
-
+# uv run pytest -k test_get_batch
 def run_get_batch(
     dataset: npt.NDArray, batch_size: int, context_length: int, device: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -452,7 +493,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return data_loading(dataset, batch_size, context_length, device)
 
 # uv run pytest -k test_softmax_matches_pytorch
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -470,7 +511,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
     """
     return softmax(in_features, dim)
 
-
+# uv run pytest -k test_cross_entropy
 def run_cross_entropy(
     inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]
 ) -> Float[Tensor, ""]:
@@ -486,9 +527,9 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    return cross_entropy(inputs, targets)
 
-
+# uv run pytest -k test_gradient_clipping
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
@@ -498,16 +539,16 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    gradient_clipping(parameters, max_l2_norm)
 
-
+# uv run pytest -k test_adamw
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return adamw_optimizer
 
-
+# uv run pytest -k test_get_lr_cosine_schedule
 def run_get_lr_cosine_schedule(
     it: int,
     max_learning_rate: float,
@@ -533,9 +574,10 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    learning_rate_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
+# uv run pytest -k test_checkpointing
 def run_save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -552,7 +594,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -573,7 +615,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 # uv run pytest tests/test_tokenizer.py

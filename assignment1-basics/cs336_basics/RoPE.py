@@ -26,6 +26,9 @@ class rope(nn.Module):
         return torch.Tensor([[cos, -sin], [sin, cos]])
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor):
+        *prefix_dims, seq_len, d_k = x.shape
+        if token_positions is None:
+            token_positions = torch.arange(seq_len, device=x.device)
         R = self.R[token_positions]
         x = R @ x.unsqueeze(-1)
         x = x.squeeze(-1)

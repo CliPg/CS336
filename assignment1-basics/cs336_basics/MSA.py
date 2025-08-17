@@ -26,19 +26,20 @@ def scaled_dot_product_attention(Q: torch.Tensor, K: torch.Tensor, V: torch.Tens
 
 class multihead_self_attention(nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, use_rope: bool = False, max_seq_len: int | None = None, 
-                 theta: float | None = None, token_positions: torch.Tensor | None = None):
+    def __init__(self, d_model: int, num_heads: int, d_k: int, d_v: int, d_in: int):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
-        self.use_rope = use_rope
-        self.rope = rope(theta, d_model // num_heads, max_seq_len) if use_rope else None
-        self.token_positions = token_positions
-        self.Qproj = Linear(d_model, d_model)
-        self.Kproj = Linear(d_model, d_model)
-        self.Vproj = Linear(d_model, d_model)
-        self.MSA = Linear(d_model, d_model)
+
+        self.d_k = d_k
+        self.d_v = d_v
+        self.d_in = d_in
+        self.head_dim = d_k // num_heads
+
+        self.Qproj = Linear(d_k, d_in)
+        self.Kproj = Linear(d_k, d_in)
+        self.Vproj = Linear(d_v, d_in)
+        self.MSA = Linear(d_model, d_v)
     
     def split_heads(self, x: torch.Tensor):
         return rearrange(x, "... seq_len (num_heads head_dim) -> ... num_heads seq_len head_dim",
@@ -47,19 +48,62 @@ class multihead_self_attention(nn.Module):
 
     def forward(self, in_features: torch.Tensor):
         seq_len = in_features.shape[-2]
-        
-        qkv_proj = torch.cat([self.Qproj.W, self.Kproj.W, self.Vproj.W])
-        qkv = in_features @ qkv_proj.T
-        Q, K, V = qkv.chunk(3, -1)
+        Q = self.Qproj(in_features)
+        K = self.Kproj(in_features)
+        V = self.Vproj(in_features)
 
         Q = self.split_heads(Q)
         K = self.split_heads(K)
         V = self.split_heads(V)
 
-        if self.use_rope:
-            Q = self.rope(Q, self.token_positions)
-            K = self.rope(K, self.token_positions)
-        
+        casual_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+        casual_mask = casual_mask[None, None, :, :]
+
+        multi_head = scaled_dot_product_attention(Q, K, V, ~casual_mask)
+        multi_head = rearrange(multi_head, "... num_heads seq_len d -> ... seq_len (num_heads d)")
+
+        multi_head_self_attention = self.MSA(multi_head)
+        return multi_head_self_attention
+    
+class multihead_self_attention_with_rope(nn.Module):
+
+    def __init__(self, d_model: int, num_heads: int, d_k: int, d_v: int, d_in: int, 
+                 max_seq_len: int, theta: float, token_positions):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.token_positions = token_positions
+
+        self.d_k = d_k
+        self.d_v = d_v
+        self.d_in = d_in
+        self.head_dim = d_k // num_heads
+
+        self.Qproj = Linear(d_k, d_in)
+        self.Kproj = Linear(d_k, d_in)
+        self.Vproj = Linear(d_v, d_in)
+        self.MSA = Linear(d_model, d_v)
+
+        self.rope = rope(theta, self.head_dim, max_seq_len)
+    
+    def split_heads(self, x: torch.Tensor):
+        return rearrange(x, "... seq_len (num_heads head_dim) -> ... num_heads seq_len head_dim",
+                         num_heads = self.num_heads, head_dim = self.head_dim
+                        )
+
+    def forward(self, in_features: torch.Tensor):
+        seq_len = in_features.shape[-2]
+        Q = self.Qproj(in_features)
+        K = self.Kproj(in_features)
+        V = self.Vproj(in_features)
+
+        Q = self.split_heads(Q)
+        K = self.split_heads(K)
+        V = self.split_heads(V)
+
+        Q = self.rope(Q, self.token_positions)
+        K = self.rope(K, self.token_positions)
+
         casual_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
         casual_mask = casual_mask[None, None, :, :]
 

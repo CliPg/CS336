@@ -29,3 +29,10 @@ uv run pytest tests/test_tokenizer.py
 FAILED tests/test_tokenizer.py::test_roundtrip_empty - KeyError: '臓'
 ```
 有点奇怪，从`gpt_vocab.json`和`gpt2_merges.txt`都没有发现**臓**这个字符
+
+
+## 8.14
+
+BPE跑不动之后，挣扎了一会就放弃了，开始写attention部分，这部分我觉得很适合对torch零基础的同学学习，从零开始造轮子，softmax、rope、embedding...
+
+写的那叫一个酣畅淋漓，放弃了BPE才发现外面根本没有雨，但也可能是因为之前写过CS224N，对Transformer结构比较了解的缘故。
