@@ -172,7 +172,7 @@ class Tokenizer:
                 self.vocab[new_id] = token_bytes
                 self.byte_to_token_id[token_bytes] = new_id
 
-    def from_files(self, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
+    def from_files(vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
 
         with open(vocab_filepath, 'rb') as f:
             vocab = pickle.load(f)
@@ -180,7 +180,7 @@ class Tokenizer:
         with open(merges_filepath, 'rb') as f:
             merges = pickle.load(f)
 
-        return Tokenizer(vocab, merges)
+        return Tokenizer(vocab, merges, special_tokens)
 
     def encode(self, text: str) -> list[int]:
         """

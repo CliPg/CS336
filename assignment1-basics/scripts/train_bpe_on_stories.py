@@ -1,4 +1,4 @@
-from BPETokenizer import train_bpe
+from ..cs336_basics.BPETokenizer import train_bpe
 import pickle
 
 def train_bpe_tinystories():
