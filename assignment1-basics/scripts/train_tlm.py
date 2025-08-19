@@ -25,7 +25,6 @@ VALID_DATA_SAVE_PATH = os.path.join(DATA_DIR, "tiny_stories_valid_tokens.dat")
 
 CONFIG_PATH = "config.json"
 
-
 def get_memmap_dataset(path, dtype=np.int32):
     arr = np.memmap(path, dtype=dtype, mode="r")
     return arr
@@ -47,7 +46,7 @@ def _to_device_and_compile(model: nn.Module):
     model = model.to(device)
 
     if hasattr(torch, "compile"):
-        model = torch.compile(model)
+        model = torch.compile(model, backend="eager")
 
     return model, device
 
