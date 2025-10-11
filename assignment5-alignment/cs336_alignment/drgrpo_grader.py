@@ -1006,12 +1006,18 @@ def grade(model_answer: str, gt_answer: str, fast: bool = True):
 
 
 def r1_zero_reward_fn(response, ground_truth, fast=True):
+    """
+    Args:
+        response: 大模型生成的think和answer部分
+        ground_truth: 标准答案
+    """
     # We are strict about format to evaluate our models.
     if "</think> <answer>" in response and "</answer>" in response:
         model_answer = response.split("<answer>")[-1].replace("</answer>", "")
         if "\\boxed" in model_answer:
             model_answer = extract_answer(model_answer)
             if model_answer is None:
+                # 从格式和答案两个维度奖励
                 return {
                     "format_reward": 1.0,
                     "answer_reward": 0.0,
