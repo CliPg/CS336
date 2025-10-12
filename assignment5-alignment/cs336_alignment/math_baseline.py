@@ -2,12 +2,15 @@ from vllm import LLM, SamplingParams
 from typing import Callable, List
 import re
 from tqdm import tqdm
+import json
+from drgrpo_grader import r1_zero_reward_fn
 
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str,str], dict[str, float]],
     prompts: List[str],
-    eval_sampling_params: SamplingParams
+    eval_sampling_params: SamplingParams,
+    examples: List[dict],
 ) -> None:
     outputs = vllm_model.generate(prompts, sampling_params=eval_sampling_params)
     generated_texts = [output[0].text for output in outputs]
@@ -52,7 +55,8 @@ def main():
         vllm_model=vllm_model,
         reward_fn=r1_zero_reward_fn,
         prompts=prompts,
-        eval_sampling_params=eval_sampling_params
+        eval_sampling_params=eval_sampling_params,
+        examples=examples,
     )
 
 if __name__ == "__main__":
