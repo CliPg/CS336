@@ -32,13 +32,13 @@ def evaluate_vllm(
     print(f"Evaluation results saved to {output_path}")
 
 def main():
-    MATH_DATASET_PATH = "../data/competition_math/data/competition_math_train.jsonl"
+    MATH_DATASET_PATH = "../data/competition_math_train.jsonl"
 
     # 加载数据集
     examples = []
     with open(MATH_DATASET_PATH, "r") as f:
         for line in f:
-            examples.append(line)
+            examples.append(json.loads(line))
 
     # 加载prompt，并将问题填入
     prompt_path = "./prompts/r1_zero.prompt"
