@@ -49,7 +49,7 @@ def main():
     model_name = "Qwen/Qwen2.5-Math-1.5B"
     vllm_model = LLM(model=model_name, tensor_parallel_size=1)
 
-    eval_sampling_params = SamplingParams(temperature=0.0, max_tokens=2048, top_p=0.95, stop=["</answer>"])
+    eval_sampling_params = SamplingParams(temperature=0.1, max_tokens=1024, top_p=1.0, stop=["</answer>"])
 
     evaluate_vllm(
         vllm_model=vllm_model,

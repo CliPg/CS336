@@ -1,7 +1,3 @@
-以下是该作业说明的中文翻译：
-
----
-
 ## 1 作业概述
 
 在本次作业中，你将亲身体验如何训练语言模型去**进行推理以解决数学问题**。
@@ -165,10 +161,6 @@
 
 如果这些替代数据集中没有直接提供标准答案（例如仅有 “1/2” 这样的简短标签），
 你可以使用 **数学答案解析器（Math-Verify）** 来处理数据集中的 `ground-truth` 列，以提取出正确答案。
-
----
-
-以下是该部分的中文翻译：
 
 ---
 
@@ -429,4 +421,216 @@ def evaluate_vllm(
 1～2 句简要总结，包括评估指标（例如准确率或奖励得分）。
 
 ---
+
+
+
+
+4 MATH 的监督微调（Supervised Finetuning for MATH）
+
+算法 1：监督微调（SFT）
+
+输入：初始策略模型$ \pi_{\theta_\text{init}}$；SFT 数据集 D
+1.	将策略模型$ \pi_\theta \gets \pi_{\theta_\text{init}}$
+2. for step = 1, …, n_sft_steps do：
+3. 从数据集 D 中抽取一个问题-回答对批次 D_b
+4. 使用模型$ \pi_\theta $计算回答相对于问题的 交叉熵损失（cross-entropy loss）
+5. 对模型参数$ \theta $进行梯度更新（gradient step）
+6.	结束循环
+
+输出：微调后的模型 $\pi_\theta$
+
+⸻
+
+推理任务的监督微调
+
+在本节中，我们将对基础模型在 MATH 数据集上进行微调（见算法 1）。
+由于我们的目标是提升模型的 推理能力，而不是直接预测正确答案，我们会微调模型，使其 先生成思路链（chain-of-thought reasoning trace），再生成答案。
+
+为此，我们提供了一个包含推理链的数据集，数据来源于 DeepSeek R1 DeepSeek-AI 等人 [2025]，存放路径为：
+
+/data/a5-alignment/MATH/sft.jsonl
+
+在实际训练推理模型时，SFT 通常作为第二步 RL 微调（Reinforcement Learning Fine-Tuning）的 warm-start（预热）。原因有两个：
+	1.	SFT 需要高质量标注数据（即已有推理链的数据），而 RL 只需要正确答案作为反馈。
+	2.	即便标注数据充足，RL 仍能通过寻找比 SFT 数据更优的策略来提升性能。
+
+不过，本作业中使用的模型规模较小，无法展示 SFT 与 RL 结合的效果，因此本作业将 分别处理 SFT 与 RL 两个阶段。
+
+
+
+### 4.1 使用 HuggingFace 模型
+
+加载 HuggingFace 模型和 tokenizer
+要从本地目录加载 HuggingFace 模型和 tokenizer（使用 bfloat16 并启用 FlashAttention-2 以节省显存），可以使用以下示例代码：
+```
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model = AutoModelForCausalLM.from_pretrained(
+    "/data/a5-alignment/models/Qwen2.5-Math-1.5B",
+    torch_dtype=torch.bfloat16,
+    attn_implementation="flash_attention_2",
+)
+
+tokenizer = AutoTokenizer.from_pretrained(
+    "/data/a5-alignment/models/Qwen2.5-Math-1.5B"
+)
+```
+
+
+#### 前向传播（Forward pass）
+
+加载模型后，可以对一批输入 ID 进行前向传播，并获取输出的 logits（通过 .logits 属性）。
+然后，可以计算模型预测的 logits 与真实标签之间的损失：
+```
+input_ids = train_batch["input_ids"].to(device)
+labels = train_batch["labels"].to(device)
+logits = model(input_ids).logits
+loss = F.cross_entropy(logits, labels)
+```
+
+
+
+#### 保存训练好的模型（Saving a trained model）
+
+训练完成后，要将模型保存到某个目录，可以使用 .save_pretrained() 方法，并传入目标输出目录的路径。
+注意，由于模型可能比较大，请确保保存路径在 /data/yourusername 下。
+
+我们也建议保存 tokenizer（即使没有修改过），这样模型和 tokenizer 可以一起存放在同一个目录中，方便后续加载。
+
+```
+# 保存模型权重
+model.save_pretrained(save_directory=output_dir)
+tokenizer.save_pretrained(save_directory=output_dir)
+```
+
+
+#### 梯度累积（Gradient accumulation）
+
+即使将模型加载为 bfloat16 并使用 FlashAttention-2，即便使用 80GB GPU，也可能无法支持较大的 batch size。
+为了使用更大的 batch size，可以采用 梯度累积（gradient accumulation） 技术。
+
+基本思想：
+- 通常，每个 batch 计算完梯度后就更新模型权重（optimizer.step()）。
+- 梯度累积则是在 多个 batch 上累积梯度，然后再进行一次梯度更新。
+- 直观理解：如果你有更大显存，一次性计算 32 个样本的梯度，效果等同于把 32 个样本拆成 16 个 batch, 每个batch 2 个样本，然后在累积梯度后平均更新一次。
+
+
+
+在 PyTorch 中实现梯度累积
+- 每个权重张量都有 .grad 属性，用于存储梯度。
+- 在调用 loss.backward() 前，.grad 是 None。
+- 调用 loss.backward() 后，.grad 中就存储了梯度。
+- 通常，我们会执行：
+	1.	optimizer.step() 更新权重
+	2.	optimizer.zero_grad() 清空梯度，为下一轮计算做准备
+
+示例（普通梯度更新）：
+```
+for inputs, labels in data_loader:
+    # 前向传播
+    logits = model(inputs)
+    loss = loss_fn(logits, labels)
+    
+    # 反向传播
+    loss.backward()
+    
+    # 更新权重
+    optimizer.step()
+    
+    # 清空梯度
+    optimizer.zero_grad()
+
+```
+
+
+实现梯度累积
+- 每隔 k 个 batch 再执行一次 optimizer.step() 和 optimizer.zero_grad()
+- 在调用 loss.backward() 前，将 loss 除以 gradient_accumulation_steps，这样梯度在累积过程中会被平均
+
+示例代码：
+```
+gradient_accumulation_steps = 4
+
+for idx, (inputs, labels) in enumerate(data_loader):
+    # 前向传播
+    logits = model(inputs)
+    loss = loss_fn(logits, labels) / gradient_accumulation_steps
+    
+    # 反向传播
+    loss.backward()
+    
+    # 每 `gradient_accumulation_steps` 个 batch 更新一次权重
+    if (idx + 1) % gradient_accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+这样就可以在显存有限的情况下模拟较大的 batch size，提升训练稳定性。
+
+
+
+### 4.2 SFT 辅助方法（SFT Helper Methods）
+
+在训练过程中，由于梯度累积，有效的 batch size 会被乘以 k，也就是梯度累积的步数。
+
+接下来，我们将实现一些在 SFT 和后续 RL 实验中会用到的辅助方法。
+
+关于术语说明：在下文中，我们会交替使用“output”、“completion” 或 “response” 来表示模型在给定 prompt 后生成的结果。
+
+
+#### Tokenizing prompts and outputs
+
+对于每一对问题和目标输出 (q, o)：
+1.	我们会 分别对问题和输出进行分词（tokenize）
+2.	然后将它们 连接在一起（concatenate）
+
+这样，我们就可以用 SFT 模型（或者后续 RL 策略）计算输出部分的 log-probabilities。
+
+此外，我们需要构建一个 response_mask：
+- 对输出 tokens（response tokens）对应位置为 True
+- 对问题 tokens（prompt tokens）和 padding tokens 对应位置为 False
+
+在训练循环中，这个 mask 会确保 只对 response tokens 计算损失。
+
+
+
+#### 问题（tokenize_prompt_and_output
+
+>任务：实现 tokenize_prompt_and_output 方法，对问题和输出分别分词，连接起来，并构建 response_mask。
+
+推荐接口：
+```
+def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer):
+    """
+    对 prompt 和 output 字符串进行分词，并构建 response_mask。
+    
+    Args:
+        prompt_strs: list[str]   # prompt 字符串列表
+        output_strs: list[str]   # output 字符串列表
+        tokenizer: PreTrainedTokenizer  # 用于分词的 tokenizer
+    
+    Returns:
+        dict[str, torch.Tensor]  # 包含 input_ids, labels, response_mask
+    """
+```
+返回字典中应包含以下 key：
+
+|key	| 说明|
+|---|---|
+|input_ids|	torch.Tensor，形状 (batch_size, max(prompt_and_output_lens) - 1)：分词后的 prompt + output 字符串，去掉最后一个 token
+|labels	|torch.Tensor，形状 (batch_size, max(prompt_and_output_lens) - 1)：shifted input ids，即 input_ids 去掉第一个 token
+|response_mask|	torch.Tensor，形状 (batch_size, max(prompt_and_output_lens) - 1)：用于 labels 中 response tokens 的 mask
+
+注：prompt_and_output_lens 是每个样本分词后长度的列表。
+
+
+测试方法
+
+为了测试你的实现：
+1.	在 [adapters.run_tokenize_prompt_and_output] 中调用你的函数
+2.	然后运行测试：
+
+```
+uv run pytest -k test_tokenize_prompt_and_output
+```
+确保实现通过测试。
 
