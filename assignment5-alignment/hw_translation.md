@@ -439,7 +439,7 @@ def evaluate_vllm(
 
 输出：微调后的模型 $\pi_\theta$
 
-⸻
+
 
 推理任务的监督微调
 
@@ -580,7 +580,7 @@ for idx, (inputs, labels) in enumerate(data_loader):
 #### Tokenizing prompts and outputs
 
 对于每一对问题和目标输出 (q, o)：
-1.	我们会 分别对问题和输出进行分词（tokenize）
+1.	我们会分别对问题和输出进行分词（tokenize）
 2.	然后将它们 连接在一起（concatenate）
 
 这样，我们就可以用 SFT 模型（或者后续 RL 策略）计算输出部分的 log-probabilities。
@@ -593,7 +593,7 @@ for idx, (inputs, labels) in enumerate(data_loader):
 
 
 
-#### 问题（tokenize_prompt_and_output
+##### Problem tokenize_prompt_and_output
 
 >任务：实现 tokenize_prompt_and_output 方法，对问题和输出分别分词，连接起来，并构建 response_mask。
 
@@ -633,4 +633,383 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer):
 uv run pytest -k test_tokenize_prompt_and_output
 ```
 确保实现通过测试。
+
+
+
+#### 记录每个 token 的熵（entropy）：
+在强化学习（RL）训练中，记录模型每个 token 的预测熵是非常有用的。
+这样可以帮助我们观察模型的预测分布是否变得“过于自信”（即概率分布过于尖锐）。
+
+熵的定义如下：
+$$
+H(p) = -\sum_{x \in X} p(x) \log p(x)
+$$
+其中 p(x) 是离散分布上的概率。
+
+在本题中，我们需要计算模型的 每个 token 的预测熵，即针对“下一个 token 的预测分布”计算熵。
+
+
+
+##### Problem：计算每个 token 的熵
+
+题目要求：
+实现一个函数 compute_entropy，用于计算每个 token 的预测熵。
+
+推荐接口：
+```
+def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """
+    计算下一个 token 的预测熵（在词汇表维度上求熵）
+    参数：
+        logits: torch.Tensor
+            形状为 (batch_size, sequence_length, vocab_size)
+            含有模型的未归一化 logits。
+    返回：
+        torch.Tensor
+            形状为 (batch_size, sequence_length)
+            每个 token 的预测熵。
+    """
+```
+注意：
+为了避免数值溢出（overflow），需要使用数值稳定的算法，例如：
+torch.logsumexp。
+
+测试方法：
+实现好后，运行以下命令：
+
+uv run pytest -k test_compute_entropy
+
+通过测试即可。
+
+
+#### 从模型中获取 log-probabilities
+
+在之后的 SFT（监督微调） 和 RL（强化学习） 中，我们需要从语言模型中获取 log-probabilities。
+
+给定：
+- 一个前缀 x
+- 模型的输出 $logits f_\theta(x) \in \mathbb{R}^{|V|}$
+- 标签 token $y \in V$
+
+其 log 概率为：
+$$
+\log p_\theta(y|x) = \log [\text{softmax}(f_\theta(x))]_y
+$$
+其中 $[x]_y $表示向量 x 的第 y 个元素。
+
+
+##### Problem：实现 get_response_log_probs
+
+任务：
+实现一个函数 get_response_log_probs，计算因果语言模型（causal LM）中每个 token 的条件 log 概率（即给定前面 tokens 的 log p(y|x)）。
+
+此外：
+还可以选择性地计算并返回 每个 token 的预测熵（使用上一个函数 compute_entropy）。
+
+推荐接口：
+
+```
+def get_response_log_probs(model, input_ids, attention_mask=None, return_entropy=False):
+    """
+    获取每个 token 的条件 log 概率（以及可选的熵）
+
+    参数：
+        model: 语言模型（如 GPT2）
+        input_ids: torch.Tensor，模型输入的 token ids
+        attention_mask: torch.Tensor，可选，用于掩码
+        return_entropy: bool，是否返回每个 token 的熵
+
+    返回：
+        log_probs: torch.Tensor，每个 token 的 log p(y|x)
+        entropies: torch.Tensor（可选），每个 token 的预测熵
+    """
+
+```
+
+
+#### SFT microbatch train step.
+
+在 SFT阶段，我们的目标是最小化目标输出在给定 prompt 条件下的负对数似然（Negative Log-Likelihood, NLL）损失。
+
+要计算这个损失：
+- 我们需要计算目标输出在 prompt 条件下的对数概率（log-probabilities）；
+- 然后对输出序列中所有的 token 求和；
+- 但要屏蔽掉 prompt 部分的 token（这些不是我们要预测的）；
+- 同时也要屏蔽掉 padding token（填充部分不应参与计算）。
+
+
+##### Problem: masked_normalize
+
+你需要实现一个函数，用于在张量上进行 带掩码（mask）的求和与归一化操作。
+这个函数在 SFT 和后续 RL（强化学习）阶段都会被使用。
+
+函数接口推荐：
+```
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None = None,
+) -> torch.Tensor:
+
+```
+
+函数功能说明：
+
+对 tensor 中的元素进行加权求和与归一化，只在 mask == 1 的位置上进行计算。
+
+参数说明：
+- tensor: torch.Tensor
+要进行求和和归一化的张量。
+- mask: torch.Tensor
+与 tensor 形状相同。mask == 1 的位置被计入求和，mask == 0 的位置会被忽略。
+- normalize_constant: float
+用于归一化的常数，即最终结果会除以这个常数。
+- dim: int | None
+指定在哪个维度上求和。如果为 None，则在所有维度上求和。
+
+返回值：
+- 一个 torch.Tensor，表示在掩码下求和后除以 normalize_constant 得到的归一化结果。
+（即：掩码为 0 的位置不参与计算）
+
+uv run pytest -k test_masked_normalize
+
+测试文件会调用 adapters.run_masked_normalize 来检查你的函数是否实现正确。
+
+
+现在，我们准备实现 SFT（Supervised Fine-Tuning） 的单个微批次（microbatch）训练步骤。（回忆一下：在一个训练的 minibatch 中，如gradient_accumulation_steps > 1，我们会循环处理多个 microbatch。）
+
+
+##### Problem (sft_microbatch_train_step): 微批次训练步骤（3 分）
+
+实现一个 SFT 的单个微批次更新（micro-batch update），包括：
+- 计算交叉熵损失（cross-entropy loss）；
+- 使用掩码（mask）进行加权求和；
+- 进行梯度缩放（gradient scaling）。
+
+推荐函数接口
+```
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+```
+
+参数说明
+
+|参数名|类型|说明|
+|---|---|---|
+|policy_log_probs|	(batch_size, sequence_length) 的张量|	模型输出的每个 token 的对数概率（log-probabilities），来自正在训练的 SFT 策略模型
+response_mask	|(batch_size, sequence_length) 的张量|	掩码，1 表示属于 response 的 token（应计算损失），0 表示 prompt 或 padding（不计算）
+gradient_accumulation_steps|	int|	每次优化器更新前累计的微批次数
+normalize_constant	|float，默认 1.0|	用于除法归一化的常数，可以保持为 1.0
+
+
+返回值
+
+tuple[torch.Tensor, dict[str, torch.Tensor]]
+
+|返回项|类型|说明|
+|-|-|-|
+|loss|	torch.Tensor（标量）|	当前微批次的损失，已经根据梯度累积进行缩放（即除以 gradient_accumulation_steps）
+|metadata|	dict[str, torch.Tensor]|	附加信息，比如底层损失计算的中间结果或日志统计指标
+
+
+
+实现提示
+- 你需要在函数中调用：loss.backward()执行反向传播。
+- 别忘了在反向传播前按梯度累积次数进行缩放：loss = loss / gradient_accumulation_steps
+- 在计算损失时，需要：
+    1.	通过掩码 response_mask 选出响应部分；
+    2.	对这些部分的 log 概率取负（因为我们要最小化 -log p）；
+    3.	使用 masked_normalize 来求加权平均或归一化。
+
+测试方式
+
+在实现完后，你需要在 adapters.py 中实现以下函数：
+
+adapters.run_sft_microbatch_train_step
+
+然后运行以下命令来测试：
+
+uv run pytest -k test_sft_microbatch_train_step
+
+确保测试全部通过
+
+
+
+
+#### 日志记录模型生成结果（Logging generations in-the-loop）
+
+在训练过程中进行“生成日志记录”是一种非常好的实践，这一点在 推理 SFT/RL（Reasoning SFT/RL） 阶段也不例外。
+
+你需要编写一个函数 log_generations，让模型针对一些给定的 prompt（提示语） 生成响应，并记录相关信息。
+这些 prompt 可以从验证集（validation set）中随机抽样获得。
+
+你应该为每个样本至少记录以下内容：
+1.	输入 prompt（模型生成的起始文本）
+2.	模型生成的响应（response），来自 SFT 或 RL 阶段的模型
+3.	真实答案（ground-truth answer）
+4.	奖励信息（reward information）
+	- 包括：
+	- 格式奖励（format reward）
+	- 答案奖励（answer reward）
+	- 总奖励（total reward）
+5.	响应的平均 token 熵（average token entropy）
+	- 衡量模型生成时的不确定性
+6.	响应长度相关统计信息：
+	- 平均响应长度（average response length）
+	- 正确响应的平均长度（average response length for correct responses）
+	- 错误响应的平均长度（average response length for incorrect responses）
+
+
+Problem: log_generations
+
+交付内容
+
+实现一个函数：
+```
+def log_generations(...):
+    ...
+```
+该函数用于在训练过程中（例如每隔若干步）从模型中生成样本输出，并将生成结果及相关统计信息进行日志记录或打印，以便分析模型性能。
+
+
+
+### 4.3 SFT 实验（Supervised Fine-Tuning Experiment）
+
+使用你前面实现的各个部分，现在你需要完成整个 SFT（监督微调）流程（对应算法 1），
+在 MATH 数据集 上对 Qwen 2.5 Math 1.5B Base 模型 进行微调。
+
+
+#### 数据集说明
+- 数据文件路径为：
+/data/a5-alignment/MATH/sft.jsonl
+- 每个样本都是一个 JSON 元素，格式如下：
+
+{
+    "prompt": "问题文本",
+    "response": "模型的目标回答（包含推理过程和最终答案）"
+}
+
+也就是说，response 中不仅有最终答案，还包括 chain-of-thought（推理链）。
+
+
+#### 训练与评估设置
+
+为了在训练过程中跟踪模型性能，你需要定期在 MATH 验证集上进行评估。
+
+你应该在 2 张 GPU 上运行你的脚本：
+- 一张 GPU 用于 policy model（SFT 训练模型）；
+- 另一张 GPU 用于 vLLM 实例 来进行 评估与推理（rollout）。
+
+
+#### vLLM 初始化与权重加载
+
+课程给出了一段辅助代码，用于：
+1.	在另一张 GPU 上初始化一个 vLLM 推理进程；
+2.	将当前 policy 模型的权重加载进该 vLLM 实例中。
+
+示例代码如下
+```
+from vllm.model_executor import set_random_seed as vllm_set_random_seed
+
+def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
+    """
+    启动 vLLM 推理进程（将其放到单独 GPU 上）
+    """
+    vllm_set_random_seed(seed)
+
+    # 从 TRL（HuggingFace）Monkeypatch
+    world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
+    profiling_patch = patch(
+        "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
+        return_value=None
+    )
+
+    with world_size_patch, profiling_patch:
+        return LLM(
+            model=model_id,
+            device=device,
+            dtype=torch.bfloat16,
+            enable_prefix_caching=True,
+            gpu_memory_utilization=gpu_memory_utilization,
+        )
+
+
+def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
+    """
+    从 TRL 仓库复制的辅助函数：
+    将 policy 模型权重加载到 vLLM 推理实例中
+    """
+    state_dict = policy.state_dict()
+    llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    llm_model.load_weights(state_dict.items())
+
+
+```
+
+#### 使用 wandb 记录指标
+
+建议在训练和验证时同时记录指标，这样在后续 RL 实验中也能复用。
+
+可在 wandb 中用以下方式定义指标轴：
+
+**设置 wandb metric 轴**
+wandb.define_metric("train_step")  # 训练步数 x 轴
+wandb.define_metric("eval_step")   # 验证步数 x 轴
+
+**所有以 train/ 开头的指标绑定到 train_step**
+wandb.define_metric("train/*", step_metric="train_step")
+
+**所有以 eval/ 开头的指标绑定到 eval_step**
+wandb.define_metric("eval/*", step_metric="eval_step")
+
+
+
+#### 梯度裁剪（Gradient Clipping）
+
+为了稳定训练，建议在优化器更新时使用：
+
+torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+
+#### Problem: sft_experiment
+
+##### 任务 1：不同数据规模下的 SFT 微调
+
+在 Qwen 2.5 Math 1.5B base 模型 上进行 SFT 微调，
+分别使用以下不同数量的样本子集：
+
+{128, 256, 512, 1024} 以及全量数据集
+
+你需要：
+- 调整 学习率（learning rate） 和 batch size（批大小）
+- 确保在使用全量数据集时，模型在验证集上达到至少 15% 的准确率
+
+交付内容 1：
+- 各数据集规模对应的验证准确率曲线（Validation accuracy curves）
+
+
+##### 任务 2：基于正确样本的过滤实验
+
+将推理 SFT 样本中过滤掉那些模型回答错误的样本，
+仅保留能产出正确答案的训练样本。
+
+然后在这个“过滤后的完整数据集”上再次运行 SFT。
+
+交付内容 2：
+- 过滤后数据集的大小（样本数）
+- 在该数据集上训练后的验证准确率曲线（Validation accuracy curve）
+
+
+##### 任务 3：结果比较
+
+比较：
+- 未过滤数据集上的 SFT 结果；
+- 过滤后数据集上的 SFT 结果。
+
+分析过滤是否带来了更好的泛化能力或稳定性。
 

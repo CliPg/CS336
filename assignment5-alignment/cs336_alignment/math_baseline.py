@@ -5,6 +5,8 @@ from tqdm import tqdm
 import json
 from drgrpo_grader import r1_zero_reward_fn
 
+# CUDA_VISIBLE_DEVICES=1 python math_baseline.py
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str,str], dict[str, float]],
@@ -12,16 +14,14 @@ def evaluate_vllm(
     eval_sampling_params: SamplingParams,
     examples: List[dict],
 ) -> None:
+    print("Starting evaluation...")
     outputs = vllm_model.generate(prompts, sampling_params=eval_sampling_params)
-    generated_texts = [output[0].text for output in outputs]
-
-    for generated_text, example in zip(generated_texts, examples):
-        rewards = reward_fn(generated_text=generated_text, ground_truth=example["solution"])
+    generated_texts = [output.outputs[0].text for output in outputs]
 
     output_path = "eval_math_results_with_Qwen.jsonl"
     with open(output_path, "w") as f:
         for generated_text, example in tqdm(zip(generated_texts, examples), total=len(examples)):
-            rewards = reward_fn(generated_text=generated_text, ground_truth=example["solution"])
+            rewards = reward_fn(response=generated_text, ground_truth=example["solution"])
             result = {
                 "problem": example["problem"],
                 "solution": example["solution"],
