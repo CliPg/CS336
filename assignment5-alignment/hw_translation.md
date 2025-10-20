@@ -420,12 +420,8 @@ def evaluate_vllm(
 📤 **提交内容**：
 1～2 句简要总结，包括评估指标（例如准确率或奖励得分）。
 
----
 
-
-
-
-4 MATH 的监督微调（Supervised Finetuning for MATH）
+## 4 MATH 的监督微调（Supervised Finetuning for MATH）
 
 算法 1：监督微调（SFT）
 
@@ -451,8 +447,8 @@ def evaluate_vllm(
 /data/a5-alignment/MATH/sft.jsonl
 
 在实际训练推理模型时，SFT 通常作为第二步 RL 微调（Reinforcement Learning Fine-Tuning）的 warm-start（预热）。原因有两个：
-	1.	SFT 需要高质量标注数据（即已有推理链的数据），而 RL 只需要正确答案作为反馈。
-	2.	即便标注数据充足，RL 仍能通过寻找比 SFT 数据更优的策略来提升性能。
+1.	SFT 需要高质量标注数据（即已有推理链的数据），而 RL 只需要正确答案作为反馈。
+2.	即便标注数据充足，RL 仍能通过寻找比 SFT 数据更优的策略来提升性能。
 
 不过，本作业中使用的模型规模较小，无法展示 SFT 与 RL 结合的效果，因此本作业将 分别处理 SFT 与 RL 两个阶段。
 
@@ -484,7 +480,7 @@ tokenizer = AutoTokenizer.from_pretrained(
 ```
 input_ids = train_batch["input_ids"].to(device)
 labels = train_batch["labels"].to(device)
-logits = model(input_ids).logits
+logits = model(input_ids).logits # logits是未经过softmax的，对输入的下一个token在词表的预测分数。
 loss = F.cross_entropy(logits, labels)
 ```
 
@@ -716,7 +712,7 @@ def get_response_log_probs(model, input_ids, attention_mask=None, return_entropy
     参数：
         model: 语言模型（如 GPT2）
         input_ids: torch.Tensor，模型输入的 token ids
-        attention_mask: torch.Tensor，可选，用于掩码
+        labels: torch.Tensor，可选，用于掩码
         return_entropy: bool，是否返回每个 token 的熵
 
     返回：
