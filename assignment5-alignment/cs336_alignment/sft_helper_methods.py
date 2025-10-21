@@ -106,7 +106,6 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer):
         "response_mask": response_mask_batch[:, 1:]         # (batch, max_len-1)
     }
 
-    
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     logz = torch.logsumexp(logits, dim=-1, keepdim=True)

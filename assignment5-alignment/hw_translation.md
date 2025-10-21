@@ -1009,3 +1009,227 @@ torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
 分析过滤是否带来了更好的泛化能力或稳定性。
 
+
+## 5 MATH 数据集上的专家迭代（Expert Iteration）
+
+在前一节中，我们观察到，通过从 SFT（监督微调）数据中筛除劣质样本，可以提升模型的性能。
+在本节中，我们将更进一步：把这种筛选过程应用到**由基础模型自身生成的推理轨迹（reasoning traces）**上。
+这种方法在文献中被称为 Expert Iteration（专家迭代） [Anthony et al., 2017]，并已在语言模型领域中得到探索
+（例如 Cobbe et al. [2021b], Zelikman et al. [2022], Dohan et al. [2022], Gulcehre et al. [2023]）。
+
+
+算法 2：专家迭代（EI）
+
+输入：
+- 初始策略模型 $\pi_{\theta_{\text{init}}}$
+- 奖励函数 R
+- 任务问题集 D
+
+
+算法步骤：
+
+1.	设策略模型 $\pi_\theta \leftarrow \pi_{\theta_{\text{init}}}$
+2.	对于每一步 $ \text{step} = 1, …, n_{\text{ei-steps}} $：
+3. 从任务集 D 中采样一个问题批次 $D_b$
+4. 设旧策略模型 $\pi{\theta_{\text{old}}} \leftarrow \pi_\theta$
+5. 对每个问题 $q \in D_b$，从旧模型中采样 G 个输出
+$\{o^{(i)}\}_{i=1}^{G} \sim \pi_{\theta_{\text{old}}}(\cdot | q)$
+6. 通过运行奖励函数 $R(q, o^{(i)})$，为每个生成的输出计算奖励 $r^{(i)}$
+7. 筛除错误输出（即奖励 $r^{(i)} = 0 $的样本），得到一个正确问答对组成的数据集 $D_{\text{sft}}$
+8. 使用监督微调（SFT，见算法 1）更新策略模型：
+$\pi_\theta \leftarrow \text{SFT}(\pi_\theta, D_{\text{sft}})$
+9. 重复以上步骤直到结束
+输出最终模型$ \pi_\theta$
+
+
+
+提示：
+在使用 vLLM 生成样本时，应为 SamplingParams 设置 min_tokens 参数，以确保生成结果不为空字符串（否则在后续计算中可能导致 NaN）。
+示例代码如下：
+```
+sampling_min_tokens = 4
+sampling_params = SamplingParams(
+    temperature=sampling_temperature,
+    max_tokens=sampling_max_tokens,
+    min_tokens=sampling_min_tokens,
+    n=G,
+    seed=seed,
+)
+```
+与 SFT 训练相同，你应当使用 梯度裁剪（gradient clipping），裁剪值设为 1.0。
+
+#### Problem:expert_iteration_experiment：
+在 MATH 数据集上运行专家迭代实验（约 6 小时 H100 GPU 运行时间）
+
+任务要求
+
+在 MATH 数据集（路径：/data/a5-alignment/MATH/train.jsonl）上，
+使用 Qwen 2.5 Math 1.5B Base 模型 运行专家迭代（Expert Iteration），并进行以下实验设置：
+1.	超参数设置：
+- 专家迭代轮数：n_ei_steps = 5
+- 每轮的批量大小（即 $D_b$ 的大小）：从以下集合中选择若干进行实验
+{512, 1024, 2048}
+- 变动参数：
+- 每个问题生成的样本数（rollouts） G
+- SFT 阶段使用的训练轮数（epochs）
+- 不需要尝试所有组合，只需足够进行比较和得出结论即可。
+2.	采样设置：
+- 使用 vLLM 生成时，应在遇到第二个 answer 标签时终止生成（与 SFT 阶段一致）。
+- 在整个训练过程中记录模型输出的熵（entropy），以分析模型输出的不确定性变化。
+
+
+需要提交的结果（Deliverables）
+1.	不同 rollout 配置下的验证准确率曲线
+- 至少尝试两种不同的 rollout 数量和 SFT epoch 数。
+- 绘制验证集准确率随训练步骤变化的曲线。
+2.	一个在 MATH 验证集上准确率 ≥ 15% 的模型。
+3.	简短分析（约 2 句）
+- 比较专家迭代（EI）与监督微调（SFT）的性能；
+- 并描述模型在不同 EI 步骤间性能的变化趋势。
+4.	模型响应熵随训练变化的曲线图
+- 显示训练过程中模型输出分布的不确定性变化。
+
+
+## 6 策略梯度（Policy Gradients）入门
+
+语言模型研究中的一个令人兴奋的新发现是：
+当在强大的基础模型上，对经过验证的奖励信号（verified rewards）执行强化学习（RL）训练时，
+模型的推理能力与整体表现会显著提升【OpenAI et al., 2024；DeepSeek-AI et al., 2025】。
+
+目前最强的开源推理模型，如 DeepSeek R1 与 Kimi k1.5【Team et al., 2025】，
+都是通过一种称为**策略梯度(Policy Gradient)**的强化学习算法训练得到的。
+这种算法能够优化任意形式的奖励函数，是强化学习中的核心方法之一。
+
+
+我们在下面对语言模型中的策略梯度做一个简要介绍。
+该内容主要参考了两份优秀的资料：
+- OpenAI 的 Spinning Up in Deep RL【Achiam, 2018a】
+- Nathan Lambert 的 Reinforcement Learning from Human Feedback (RLHF) Book【Lambert, 2024】
+
+
+### 6.1 语言模型作为策略（Policies）
+
+一个带参数 $\theta$ 的因果语言模型（Causal LM），定义了一个概率分布：
+给定当前文本前缀 $s_t$（即状态或观察），生成下一个 token $a_t \in V$ 的概率为：
+
+$$a_t \sim \pi_\theta(\cdot | s_t), \quad \pi_\theta(a_t | s_t) = \text{softmax}(f_\theta(s_t))_{a_t} \tag{3}$$
+
+在强化学习的视角下：
+- 当前文本前缀 $s_t$ 被看作状态（state）；
+- 下一个 token $a_t$ 被看作动作（action）；
+- 因此，语言模型实际上是一个离散随机策略（categorical stochastic policy）。
+
+优化该策略时需要两个基本操作：
+1.	从策略中采样动作：
+从上面的分布中采样下一个 token $a_t$。
+2.	计算动作的对数似然得分：
+计算 $\log \pi_\theta(a_t | s_t)$，即生成该 token 的对数概率。
+
+
+在语言模型强化学习中：
+- $s_t$：当前已生成的部分回答（partial completion）；
+- $a_t$：即将生成的下一个 token；
+- 整个过程持续到生成结束标志，如 <|end_of_text|> 或在我们的 r1_zero 提示中为 answer。
+
+
+### 6.2 轨迹（Trajectories）
+
+一个**有限时域轨迹**（finite-horizon trajectory）是智能体经历的一系列状态与动作的交替序列：
+
+$$\tau = (s_0, a_0, s_1, a_1, \ldots, s_T, a_T) \tag{4}$$
+
+其中：
+- T 为轨迹长度；
+- 终止条件是：模型生成了结束标志 token（例如 answer）或达到了最大生成长度。
+
+
+在轨迹开始时：
+- 初始状态 $s_0$ 来自起始分布 $\rho_0(s_0)$；
+- 在语言模型强化学习中，$\rho_0(s_0)$ 是一个**格式化提示**（formatted prompts）的分布。
+
+在一般强化学习环境中：
+$s_{t+1} \sim P(\cdot | s_t, a_t)$，其中 P 是环境的状态转移分布。
+
+而在语言模型中：
+- 环境是确定性的（deterministic）；
+- 下一状态就是当前前缀拼接上生成的 token：
+$s_{t+1} = s_t \Vert a_t$
+
+轨迹也被称为 episodes（回合） 或 rollouts（采样生成），
+在本课程或实验中，这些术语可以互换使用。
+
+
+### 6.3 奖励与回报（Rewards and Return）
+
+一个标量奖励 $r_t = R(s_t, a_t)$ 用于评估在状态 $s_t$ 下执行动作 $a_t$ 的即时质量。在**可验证领域**（verified domains）的强化学习中，通常的做法是：
+- 对中间步骤给予 0 奖励；
+- 对最终动作（即输出完整答案的那一步）给予验证奖励。
+
+即：
+$$r_T = R(s_T, a_T) :=
+\begin{cases}
+1, & \text{如果轨迹 } s_T \Vert a_T \text{ 与真实答案匹配（由奖励函数判断）} \\
+0, & \text{否则}
+\end{cases}
+$$
+
+
+轨迹的总回报 $R(\tau)$ 是对整条轨迹的奖励求和。常见的两种定义为：
+1.	有限时域非折扣回报（finite-horizon undiscounted return）
+$$R(\tau) = \sum_{t=0}^{T} r_t \tag{5}$$
+2.	无限时域折扣回报（infinite-horizon discounted return）
+$$R(\tau) = \sum_{t=0}^{\infty} \gamma^t r_t, \quad 0 < \gamma < 1 \tag{6}$$
+
+在我们的场景中（语言模型生成任务），每个 episode 都有自然终点（例如生成 <|end_of_text|> 或达到最大长度），
+因此我们使用非折扣形式（undiscounted formulation）。
+
+
+
+智能体（语言模型）的目标是最大化期望回报（expected return）：
+
+$$J(\theta) = \mathbb{E}{\tau \sim \pi _\theta}[R(\tau)] \tag{7}
+$$
+因此，优化目标为：
+
+$$\theta^* = \arg \max_\theta J(\theta) \tag{8}
+$$
+
+
+6.4 朴素策略梯度（Vanilla Policy Gradient）
+
+接下来，我们尝试通过**梯度上升（gradient ascent）**来优化策略参数 \theta，
+以最大化期望回报：
+
+\theta_{k+1} = \theta_k + \alpha \nabla_\theta J(\theta_k) \tag{9}
+
+其中 \alpha 是学习率。
+
+⸻
+
+该方法的核心是著名的 REINFORCE 策略梯度公式（Policy Gradient Theorem）：
+
+\nabla_\theta J(\pi_\theta)
+= \mathbb{E}{\tau \sim \pi\theta} \left[ \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) \, R(\tau) \right] \tag{10}
+
+⸻
+
+策略梯度的推导
+
+我们是如何得到上面的式子呢？下面给出一个推导的关键步骤。
+	1.	轨迹的概率分布
+一条轨迹 \tau 的概率为：
+P(\tau | \theta)
+= \rho_0(s_0) \prod_{t=0}^{T} P(s_{t+1} | s_t, a_t)\, \pi_\theta(a_t | s_t) \tag{11}
+其中：
+	•	\rho_0(s_0)：初始状态的分布；
+	•	P(s_{t+1} | s_t, a_t)：环境的状态转移概率；
+	•	\pi_\theta(a_t | s_t)：策略的动作分布。
+	2.	轨迹的对数概率
+对上式取对数，得到：
+\log P(\tau | \theta)
+= \log \rho_0(s_0)
+	•	\sum_{t=0}^{T} \log P(s_{t+1} | s_t, a_t)
+	•	\log \pi_\theta(a_t | s_t) \tag{12}
+
+其中，只有最后一项 \log \pi_\theta(a_t | s_t) 依赖于参数 \theta，
+这为后续的梯度推导提供了基础。

@@ -18,7 +18,7 @@ class SFTDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         return {
-            "prompt": item['prompt'],
+            "prompt": item['problem'],
             "generated_text": item['generated_text']
         }
         
@@ -58,7 +58,7 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 
-def save_checkpoint(step, model, optimizer, checkpoint_dir="../models/sft/checkpoints"):
+def save_checkpoint(step, model, optimizer, checkpoint_dir):
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_step_{step}.pt")
     torch.save({
         "step": step,
@@ -68,7 +68,7 @@ def save_checkpoint(step, model, optimizer, checkpoint_dir="../models/sft/checkp
     print(f"Checkpoint saved at step {step}: {checkpoint_path}")
 
 
-def load_latest_checkpoint(model, optimizer, checkpoint_dir="../models/sft/checkpoints"):
+def load_latest_checkpoint(model, optimizer, checkpoint_dir):
     if not os.path.exists(checkpoint_dir):
         return 0  # 无checkpoint
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pt")]
@@ -82,16 +82,18 @@ def load_latest_checkpoint(model, optimizer, checkpoint_dir="../models/sft/check
     print(f"Resumed from checkpoint: {path}")
     return ckpt["step"]
 
-def supervised_finetuning(model_id: str, n_sft_steps: int, gradient_accumulation_steps: int):
+def supervised_finetuning(model_id: str, n_sft_steps: int, gradient_accumulation_steps: int, dataset_path: str, checkpoint_dir: str):
     wandb.define_metric("train_step")
     wandb.define_metric("train/*", step_metric="train_step")
+
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id)
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
-    start_step = load_latest_checkpoint(model, optimizer)
-    dataset = SFTDataset(path="../data/eval_math_results_with_Qwen.jsonl", tokenizer=tokenizer)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+
+    start_step = load_latest_checkpoint(model, optimizer, checkpoint_dir)
+    dataset = SFTDataset(path=dataset_path, tokenizer=tokenizer)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
     llm = init_vllm(model_id=model_id, device="cuda:0", seed=42)
     for step, batch in enumerate(tqdm(dataloader, desc="Training", total=len(dataloader))):
         step += start_step
@@ -114,7 +116,7 @@ def supervised_finetuning(model_id: str, n_sft_steps: int, gradient_accumulation
             model=model,
             input_ids=input_ids,
             labels=labels,
-            return_entropy=False,
+            return_token_entropy=False,
         )["log_probs"]
         # 计算loss并进行优化
         loss, stats = sft_microbatch_train_step(
@@ -136,16 +138,23 @@ def supervised_finetuning(model_id: str, n_sft_steps: int, gradient_accumulation
             })
         if (step + 1) % 100 == 0:
             load_policy_into_vllm_instance(policy=model, llm=llm)
-            save_checkpoint(step + 1, model, optimizer)
+            save_checkpoint(step + 1, model, optimizer, checkpoint_dir)
     model.save_pretrained("../models/sft/sft_finetuned_model")
     tokenizer.save_pretrained("../models/sft/sft_finetuned_tokenizer")
 
     
 if __name__ == "__main__":
     wandb.init(project="cs336-sft", name="sft-experiment-1")
+
+    DATASET_PATH = "../data/eval_math_results_with_Qwen.jsonl"
+    MODEL_ID = "Qwen/Qwen2.5-Math-1.5B"
+    CHECKPOINT_DIR = "../models/sft/checkpoints"
+
     supervised_finetuning(
-        model_id="Qwen/Qwen2.5-Math-1.5B",
+        model_id=MODEL_ID,
         n_sft_steps=1000,
         gradient_accumulation_steps=4,
+        dataset_path=DATASET_PATH,
+        checkpoint_dir=CHECKPOINT_DIR,
     )
     wandb.finish()
