@@ -178,6 +178,12 @@ for eval_step in range(10):
 
 ## GRPO
 
+**rollout**
+
+在强化学习中，rollout 指的是：
+从环境（environment）中采样得到的一条完整轨迹（trajectory）：
+$$\tau = (s_0, a_0, r_0, s_1, a_1, r_1, …, s_T)
+$$
 ### compute_group_normalized_rewards
 每个问题会生成多(group_size)个回答，我们需要在同一问题组内计算奖励的相对好坏，这称为群体归一化。
 
