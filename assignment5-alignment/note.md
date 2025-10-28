@@ -174,3 +174,16 @@ for eval_step in range(10):
     eval_acc = validate(...)
     wandb.log({"eval/accuracy": eval_acc, "eval_step": eval_step})
 ```
+
+
+## GRPO
+
+### compute_group_normalized_rewards
+每个问题会生成多(group_size)个回答，我们需要在同一问题组内计算奖励的相对好坏，这称为群体归一化。
+
+常见做法有两种：
+1.	标准化（normalize_by_std=True）
+$$A_i = \frac{r_i - \text{mean}(r_1, \dots, r_G)}{\text{std}(r_1, \dots, r_G) + \epsilon}$$
+2.	仅减去均值（normalize_by_std=False）
+$$A_i = r_i - \text{mean}(r_1, \dots, r_G)
+$$

@@ -1195,41 +1195,416 @@ $$\theta^* = \arg \max_\theta J(\theta) \tag{8}
 $$
 
 
-6.4 朴素策略梯度（Vanilla Policy Gradient）
+### 6.4 朴素策略梯度（Vanilla Policy Gradient）
 
-接下来，我们尝试通过**梯度上升（gradient ascent）**来优化策略参数 \theta，
+接下来，我们尝试通过**梯度上升**（gradient ascent）来优化策略参数$ \theta$，
 以最大化期望回报：
 
-\theta_{k+1} = \theta_k + \alpha \nabla_\theta J(\theta_k) \tag{9}
+$$\theta_{k+1} = \theta_k + \alpha \nabla_\theta J(\theta_k) \tag{9}
+$$
+其中 $\alpha$ 是学习率。
 
-其中 \alpha 是学习率。
-
-⸻
 
 该方法的核心是著名的 REINFORCE 策略梯度公式（Policy Gradient Theorem）：
 
-\nabla_\theta J(\pi_\theta)
-= \mathbb{E}{\tau \sim \pi\theta} \left[ \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) \, R(\tau) \right] \tag{10}
+$$\nabla_\theta J(\pi_\theta)
+= \mathbb{E}{\tau \sim \pi _\theta} \left[ \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) \, R(\tau) \right] \tag{10}$$
 
-⸻
 
 策略梯度的推导
 
 我们是如何得到上面的式子呢？下面给出一个推导的关键步骤。
-	1.	轨迹的概率分布
-一条轨迹 \tau 的概率为：
-P(\tau | \theta)
-= \rho_0(s_0) \prod_{t=0}^{T} P(s_{t+1} | s_t, a_t)\, \pi_\theta(a_t | s_t) \tag{11}
+1.	轨迹的概率分布
+一条轨迹 $\tau$ 的概率为：
+$$P(\tau | \theta)
+= \rho_0(s_0) \prod_{t=0}^{T} P(s_{t+1} | s_t, a_t)\, \pi_\theta(a_t | s_t) \tag{11}$$
 其中：
-	•	\rho_0(s_0)：初始状态的分布；
-	•	P(s_{t+1} | s_t, a_t)：环境的状态转移概率；
-	•	\pi_\theta(a_t | s_t)：策略的动作分布。
-	2.	轨迹的对数概率
-对上式取对数，得到：
-\log P(\tau | \theta)
-= \log \rho_0(s_0)
-	•	\sum_{t=0}^{T} \log P(s_{t+1} | s_t, a_t)
-	•	\log \pi_\theta(a_t | s_t) \tag{12}
+- $\rho_0(s_0)$：初始状态的分布；
+- $P(s_{t+1} | s_t, a_t)$：环境的状态转移概率；
+- $\pi_\theta(a_t | s_t)$：策略的动作分布。
 
-其中，只有最后一项 \log \pi_\theta(a_t | s_t) 依赖于参数 \theta，
-这为后续的梯度推导提供了基础。
+对上式取对数，得到：
+$$\log P(\tau | \theta)
+= \log \rho_0(s_0) + \sum_{t=0}^{T} [\log P(s_{t+1} | s_t, a_t)+ \log \pi_\theta(a_t | s_t)] \tag{12}$$
+
+2. 对数导数技巧（Log-derivative Trick）
+
+$$
+\nabla_\theta P = P \nabla_\theta \log P \tag{13}
+$$
+
+
+3. 环境项对 $\theta$ 是常数：
+
+由于 $\rho_0$、$P(\cdot|\cdot)$ 和 $R(\tau)$ 都不依赖于策略参数 $\theta$，我们有：
+
+$$\nabla_\theta \rho_0 = \nabla_\theta P = \nabla_\theta R(\tau) = 0 \tag{14}$$
+
+基于上述事实，我们可以得到策略梯度的推导过程：
+
+$$\nabla_\theta J(\theta) = \nabla_\theta \mathbb{E}{\tau \sim \pi _ \theta} [R(\tau)] \tag{15}$$
+$$
+= \nabla_\theta \left( \sum_\tau P(\tau | \theta) R(\tau) \right) \tag{16}$$
+
+
+$$= \sum _ \tau \nabla_\theta P(\tau | \theta) R(\tau) \tag{17}
+$$
+
+$$= \sum_\tau P(\tau | \theta) \nabla_\theta \log P(\tau | \theta) R(\tau) \tag{18}$$
+
+
+$$= \mathbb{E}{\tau \sim \pi _\theta} \left[ \nabla_\theta \log P(\tau | \theta) R(\tau) \right] \tag{17}$$
+
+因此，结合轨迹的对数概率并使用环境项常数的事实，得到朴素的 REINFORCE 策略梯度：
+
+$$\nabla_\theta J(\pi_\theta) = \mathbb{E}{\tau \sim \pi _ \theta} \left[ \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) R(\tau) \right] \tag{20}$$
+
+
+这个梯度会增加那些回报较高的轨迹中每个动作的对数概率，而减少回报较低的轨迹中动作的对数概率。
+
+
+
+4. 梯度的样本估计：
+
+给定一个由 N 次采样得到的 rollouts 批次 $D = \{ \tau^{(i)} \}^N_{i=1}$，其中每次采样都从起始状态 $s_0^{(i)} \sim \rho_0(s_0)$ 开始，并在环境中运行策略 $\pi_\theta$，我们可以得到梯度的无偏估计：
+
+$$g = \frac{1}{N} \sum_{i=1}^{N} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t^{(i)} | s_t^{(i)}) R(\tau^{(i)}) \tag{21}$$
+
+这个梯度向量 g 会用于梯度上升更新：
+$\theta \leftarrow \theta + \alpha g
+$
+，其中 $\alpha$ 是学习率。
+
+
+
+### 6.5 策略梯度基线（Policy Gradient Baselines）
+
+在最基本的策略梯度（vanilla policy gradient）算法中，一个主要问题是梯度估计的方差较高。
+一种常见的缓解方法是从奖励中减去一个仅依赖于状态的基线函数（baseline function）。这属于一种控制变量（control variate） 技术 [Ross, 2022]，其核心思想是：
+通过减去一个与估计量相关的项来降低方差，同时不引入偏差（bias）。
+
+基线化的策略梯度定义如下：
+
+$$B = \mathbb{E}{\tau \sim \pi _ \theta} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) [R(\tau) - b(s_t)] \tag{22}$$
+
+举个例子，一个合理的基线选择是策略的价值函数（on-policy value function）：
+
+$$V^\pi(s) = \mathbb{E}{\tau \sim \pi _ \theta} [R(\tau) | s_t = s]
+$$
+即：
+
+当我们从状态 $s_t = s$ 开始并按照当前策略 $\pi_\theta$ 执行时，期望获得的回报。
+
+那么，差值 $(R(\tau) - V^\pi(s_t))$ 就可以直观地理解为：
+“该次轨迹的实际回报比期望值好多少（或差多少）”。
+
+只要基线函数 仅依赖于状态（不依赖于动作），
+则引入基线后的策略梯度仍然是无偏的（unbiased）。
+
+我们可以这样推导：
+
+$$B = \mathbb{E}{\tau \sim \pi_\theta} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) R(\tau)
+-	\mathbb{E}{\tau \sim \pi_\theta} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) b(s_t) \tag{23}$$
+
+现在我们专注于第二项（与基线相关的部分）：
+
+$$\mathbb{E}{\tau \sim \pi_\theta} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) b(s_t)
+= \sum_{t=0}^{T} \mathbb{E}{s_t}[b(s_t) \, \mathbb{E}{a_t \sim \pi_\theta(\cdot|s_t)}[\nabla_\theta \log \pi_\theta(a_t | s_t)]] \tag{24}$$
+
+而一般来说，得分函数的期望为零：
+
+$$\mathbb{E}{x \sim P\theta}[\nabla_\theta \log P_\theta(x)] = 0$$
+
+因此，上式中的基线项为 0，得：
+
+$$B = \mathbb{E}{\tau \sim \pi\theta} \sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t | s_t) R(\tau) - 0 = \nabla_\theta J(\pi_\theta) \tag{25}$$
+
+由此可以得出结论：
+加入基线后的策略梯度依然是无偏估计。
+
+稍后我们还会通过实验验证，引入基线是否能改善下游性能。
+
+
+**关于策略梯度的 “损失函数”（Loss）说明**
+
+在像 PyTorch 这样的框架中实现策略梯度方法时，
+我们通常会定义一个所谓的 策略梯度损失（policy gradient loss） —— 记作 pg_loss。
+
+其定义为：
+
+
+$$pgloss = \frac{1}{N} \sum{i=1}^{N} \sum_{t=0}^{T} \log \pi_\theta(a_t^{(i)} | s_t^{(i)}) \, [R(\tau^{(i)}) - b(s_t^{(i)})] \tag{26}$$
+
+
+当调用 pg_loss.backward() 时，
+框架会自动通过反向传播，将近似的策略梯度 g 填充到模型参数的梯度缓冲区中。
+
+换句话说，pg_loss 只是一个计算梯度的中间标量，
+并不是一个可以衡量模型性能的“真正意义上的损失函数”。
+
+注意
+- 不应在训练集或验证集上报告 pg_loss 作为性能指标；
+- 一个好的验证 pg_loss 值并不意味着模型泛化性良好；
+- 在强化学习（RL）中，唯一有意义的评估指标是训练与验证的平均回报（reward）；
+- 我们优化策略梯度方法的最终目标，就是最大化这些回报。
+
+### 6.6 离策略（Off-Policy）策略梯度
+
+REINFORCE 是一种在策略（on-policy）算法：
+训练数据由我们正在优化的策略生成。我们可以这样写出 REINFORCE 算法的流程：
+1.	采样阶段：从当前策略 πθ 中采样一批轨迹（rollouts） {τ(i)}ₙᵢ₌₁。
+2.	梯度估计：近似计算策略梯度
+$∇_θ J(π_θ) ≈ \hat{g} = \frac{1}{N} \sum_{i=1}^{N} \sum_{t=0}^{T} ∇_θ \log π_θ(a_t^{(i)} | s_t^{(i)}) R(τ^{(i)})$.
+
+3.	参数更新：根据计算出的梯度更新策略参数
+θ ← θ + αg.
+
+在这种方法中，我们需要进行大量推理来采样新的轨迹批次，但每次仅执行一次梯度更新。
+由于语言模型（LM）的行为在一次更新中通常不会发生显著变化，这种在策略方法效率极低。
+
+
+**离策略策略梯度**（Off-policy Policy Gradient）
+
+在离策略学习（off-policy learning）中，我们不再使用当前正在优化的策略采样轨迹，而是使用由其他策略生成的轨迹。
+
+在像 PPO 和 GRPO 这样的常用策略梯度算法的离策略变体中，
+轨迹由策略的先前版本$π_{θ_{old}}$生成，而我们优化的是当前策略 $π_θ$。
+
+离策略策略梯度的估计公式如下：
+
+$
+g_{\text{off-policy}} = \frac{1}{N} \sum_{i=1}^{N} \sum_{t=0}^{T} ∇_θ \log π_θ(a_t^{(i)} | s_t^{(i)}) R(τ^{(i)}) \frac{π_θ(a_t^{(i)} | s_t^{(i)})}{π_{θ_{old}}(a_t^{(i)} | s_t^{(i)})} （27）$.
+
+
+这看起来像是一个带有重要性采样（importance sampling）加权项的普通策略梯度公式，其中权重为
+$\frac{π_θ(a_t^{(i)} | s_t^{(i)})}{π_{θ_{old}}(a_t^{(i)} | s_t^{(i)})}$.
+
+实际上，公式 (27) 可以通过重要性采样原理推导得到。
+只要 {πθ} 和 $π_{θ_{old}}$ 差异不大，这种近似就是合理的。
+有关更详细的理论推导，可参考 Degris 等人（2013） 的研究。
+
+
+## 7 群体相对策略优化（Group Relative Policy Optimization, GRPO）
+
+接下来，我们将介绍群体相对策略优化（GRPO），这是一种策略梯度（policy gradient）的变体，你将实现并用它来解决数学问题。
+
+### 7.1 GRPO 算法
+
+优势估计（Advantage estimation）
+GRPO 的核心思想是：对于每个问题，从当前策略 $π_θ$ 中采样多个输出，用这些输出来计算一个基线（baseline）。
+这种方法的好处是，我们不需要训练神经价值函数 $Vϕ(s)$，因为价值函数往往难以训练，并且在系统层面上也比较繁琐。
+
+设对于一个问题 $q$，从策略 $\pi_\theta$ 中采样得到一组输出：
+$\{o^{(i)}\}_{i=1}^G \sim \pi_\theta(\cdot | q)$
+每个输出 $o^{(i)} $的奖励为：
+$r^{(i)} = R(q, o^{(i)})$
+
+DeepSeekMath [Shao et al., 2024] 和 DeepSeek R1 [DeepSeek-AI et al., 2025] 使用如下公式计算群体归一化奖励（group-normalized reward）：
+$A^{(i)} = \frac{r^{(i)} - \text{mean}(r^{(1)}, r^{(2)}, \ldots, r^{(G)})}{\text{std}(r^{(1)}, r^{(2)}, \ldots, r^{(G)}) + \text{advantage\_eps}}$
+其中，advantage_eps 是一个防止除以零的小常数。
+
+需要注意的是，该优势值 $A^{(i)}$ 对响应中的所有 token 都相同，即：
+$A^{(i)}_t = A^{(i)}, \quad \forall t \in 1, \ldots, |o^{(i)}|
+$因此，在后续推导中我们省略下标 $t$。
+
+
+算法整体流程
+
+在深入研究 GRPO 目标函数之前，我们先了解该算法的总体训练循环。
+我们参考 Shao 等人（2024）的描述，将训练流程写成 算法 3 的形式。
+
+
+GRPO 目标函数（GRPO Objective）
+
+GRPO 的目标函数结合了三个关键思想：
+1.	离策略的策略梯度（Off-policy policy gradient） —— 对应公式 (27)。
+2.	基于群体归一化的优势估计（Advantage computed by group normalization） —— 对应公式 (28)。
+3.	裁剪机制（Clipping mechanism） —— 借鉴自 Schulman 等人（2017）提出的 PPO（Proximal Policy Optimization）算法。
+
+
+裁剪的目的在于：
+当我们对同一批轨迹（rollouts）进行多次梯度更新时，防止策略 $πθ$ 偏离旧策略过远，从而保持训练的稳定性。
+
+
+算法 3：群体相对策略优化（Group Relative Policy Optimization, GRPO）
+
+输入：初始策略模型 $π_{θ_{init}}$；奖励函数 $R$；任务问题集 $D$
+
+输出：最终策略模型 $π_θ$
+1.	令策略模型 $π_θ ← π_{θ_init}$
+2.	对每个步骤 step = 1, …, n_grpo_steps 执行：
+3. 从任务集合 D 中采样一个批次问题 Db
+4. 设旧的策略模型 $π_{θ_{old}} ← π_θ$
+5. 对每个问题 $q ∈ D_b$，从旧策略 $π_{θ_{old}}$ 中采样 G 个输出 $\{o(i)\}_{i=1}^G ∼ π_{θ_{old}}(·|q)$
+6. 使用奖励函数$ R(q, o(i))$ 计算每个采样输出$ o(i)$ 的奖励 $r(i)$
+7. 使用群体归一化（公式 28）计算优势值 $A(i)$
+8. 对每个训练步骤 train_step = 1, …, n_train_steps_per_rollout_batch 执行：
+9. 通过最大化 GRPO-Clip 目标函数（公式 29）来更新策略模型 $π_θ$
+10. 结束 for
+
+输出最终策略模型 $π_θ$
+
+
+接下来我们写出完整的 GRPO-Clip 目标函数，然后解释剪切（clipping）操作的作用：
+
+$$J_{GRPO-Clip}(θ) =
+E_{q∼D, {o^{(i)}}^G_{i=1} ∼ π_{θ_{old}}(·|q)}
+\frac{1}{G} \sum_{i=1}^{G} \frac{1}{|o^{(i)}|} \sum_{t=1}^{|o^{(i)}|}
+\min\left(
+\frac{π_θ(o^{(i)}t | q, o^{(i)}{<t})}{π_{θ_{old}}(o^{(i)}t | q, o^{(i)}{<t})} A^{(i)},
+\text{clip}\left(\frac{π_θ(o^{(i)}t | q, o^{(i)}{<t})}{π_{θ_{old}}(o^{(i)}t | q, o^{(i)}{<t})}, 1 - ε, 1 + ε\right) A^{(i)}
+\right)
+（29）$$
+
+其中超参数 ε > 0 控制策略更新的幅度。为了更直观地理解这个机制，我们参考 Achiam [2018a,b] 定义一个函数：
+
+$$g(ε, A^{(i)}) =
+\begin{cases}
+(1 + ε)A^{(i)}, & \text{如果 } A^{(i)} ≥ 0 \\
+(1 - ε)A^{(i)}, & \text{如果 } A^{(i)} < 0
+\end{cases}
+（30）$$
+
+于是，每个 token 的目标函数可以改写为：
+
+$$\text{per-token objective} =
+\min\left(
+\frac{π_θ(o^{(i)}t | q, o^{(i)}{<t})}{π_{θ_{old}}(o^{(i)}t | q, o^{(i)}{<t})} A^{(i)},
+g(ε, A^{(i)})
+\right)$$
+
+
+我们可以分情况进行推理：
+- 当优势值 A(i) 为正时：
+每个 token 的目标函数为
+$$\text{per-token objective} =
+\min\left(
+\frac{π_θ(o^{(i)}t | q, o^{(i)}{<t})}{π_{θ_{old}}(o^{(i)}t | q, o^{(i)}{<t})} A^{(i)},
+(1 + ε)A^{(i)}
+\right)$$
+由于 $A(i) > 0$，当新策略 $π_θ$ 使动作$ o(i)_t $的概率变大时（即 $π_θ(o(i)_t|…)$ 增加），目标值会上升。但剪切min操作会限制增长幅度：
+当 $πθ(o(i)_t|q, o(i)<t) > (1 + ε)πθ_old(o(i)_t|q, o(i)<t)$ 时，目标值达到上限 $(1 + ε)A(i)$。
+因此，策略 $πθ$ 不会被鼓励过度偏离旧策略$ π_{θ_{old}}$。
+- 当优势值 A(i) 为负时：
+模型会尝试降低 $π_θ(o(i)_t|q, o(i)<t)$，但剪切机制会阻止它降得过低。
+当 $π_θ(o(i)_t|q, o(i)<t) < (1 − ε)πθ_old(o(i)_t|q, o(i)<t)$ 时，继续降低不会再提升目标值（可参见 Achiam [2018b] 的完整推导）。
+
+好的，以下是 第 7.2 节 Implementation（实现） 的完整中文翻译，保持技术准确性和可读性：
+
+
+### 7.2 实现
+
+现在我们已经对 GRPO 的训练循环和目标函数有了较高层次的理解，接下来我们将开始实现其中的各个部分。
+在 SFT（监督微调） 和 EI（Explicit Improvement） 部分中实现的许多组件也会被 GRPO 复用。
+
+
+#### **计算优势值**（群体归一化奖励）
+
+首先，我们将实现计算每个 rollout 批次样本优势值（advantage）的逻辑，也就是 群体归一化奖励（group-normalized rewards）。
+我们将考虑两种不同的方式来获得群体归一化奖励：
+1.	前文公式 (28) 所提出的方法；
+2.	一种更简化的最新方法。
+
+Dr. GRPO [Liu et al., 2025] 指出：
+使用标准差 $std(r(1), r(2), …, r(G))$ 进行归一化的方式，
+会使得在回答正确性差异较小的问题上（即所有答案都差不多正确或错误），该问题获得较高奖励，
+这种现象可能并不理想。
+
+因此，他们提出了一种简化版本：移除归一化步骤，直接计算：
+
+$$A^{(i)} = r^{(i)} - \text{mean}(r^{(1)}, r^{(2)}, …, r^{(G)})
+（31）$$
+
+
+#### Problem（compute_group_normalized_rewards）：群体归一化
+
+交付内容（Deliverable）：
+实现一个名为 compute_group_normalized_rewards 的方法。
+该方法应当为每个 rollout 响应（response）计算原始奖励（raw rewards），
+并在每个组（group）内部进行归一化（normalization），
+最后返回归一化后的奖励、原始奖励，以及你认为有用的任何元数据（metadata）。
+
+推荐的函数接口：
+
+```
+def compute_group_normalized_rewards(
+    reward_fn,
+    rollout_responses,
+    repeated_ground_truths,
+    group_size,
+    advantage_eps,
+    normalize_by_std,
+):
+```
+
+函数功能：
+
+计算每组 rollout 响应的奖励值，并根据组大小（group size）进行归一化处理。
+
+
+
+参数说明：
+- reward_fn：
+类型：Callable[[str, str], dict[str, float]]
+一个可调用函数，用于根据真实答案（ground truth）评估 rollout 响应，
+返回一个包含以下键的字典：
+    - "reward"
+    - "format_reward"
+    - "answer_reward"
+
+- rollout_responses：
+类型：list[str]
+策略模型生成的 rollout 响应列表。
+其长度为
+$rollout\_batch\_size = n\_prompts\_per\_rollout\_batch \times group\_size$
+即每个问题生成 group_size 个响应。
+
+- repeated_ground_truths：
+类型：list[str]
+每个示例对应的真实答案（ground truth）。
+该列表的长度与 rollout_responses 相同，
+因为每个真实答案会重复 group_size 次（每个组内的所有响应共享同一个 ground truth）。
+
+- group_size：
+类型：int
+每个问题对应的响应数量（组大小）。
+
+- advantage_eps：
+类型：float
+在标准差归一化中，为避免除以零而加入的微小常数。
+
+- normalize_by_std：
+类型：bool
+若为 True，则使用组内标准差进行归一化；
+若为 False，则仅减去组内均值（即不除以标准差）。
+
+
+返回值（Returns）：
+
+一个三元组（tuple）：
+
+tuple[torch.Tensor, torch.Tensor, dict[str, float]]
+
+包含以下内容：
+- advantages：
+形状为 (rollout_batch_size,) 的 torch.Tensor，
+表示每个 rollout 响应的群体归一化奖励（group-normalized rewards）。
+- raw_rewards：
+形状为 (rollout_batch_size,) 的 torch.Tensor，
+表示每个 rollout 响应的原始奖励（未归一化的 rewards）。
+- metadata：
+一个字典，包含可选的统计信息，
+例如奖励的均值、标准差、最大值/最小值等，用于日志记录或调试。
+
+
+
+测试方法：
+
+实现函数 adapters.run_compute_group_normalized_rewards，
+然后运行以下命令进行测试：
+```
+uv run pytest -k test_compute_group_normalized_rewards
+```
+确保你的实现通过测试。
+
+
