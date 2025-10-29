@@ -1608,3 +1608,190 @@ uv run pytest -k test_compute_group_normalized_rewards
 确保你的实现通过测试。
 
 
+#### 朴素策略梯度损失（Naive policy gradient loss）
+
+接下来我们将实现一些用于计算“损失（loss）”的方法。
+需要注意的是，这些并不是真正意义上的“损失函数”，因此不应作为评估指标（evaluation metrics）来报告。
+在强化学习（RL）中，应该关注的是训练和验证过程中的回报（train/validation returns）等指标（参见第 6.5 节的讨论）。
+
+我们先从朴素策略梯度损失（naive policy gradient loss）开始。
+这个损失的思想很简单：将优势值（advantage）乘以动作的对数概率（log-probability），并取负号。
+
+设：
+- 问题为 q
+- 模型生成的回答为 o
+- 生成回答的第 t 个词（token）为 $o_t$
+
+那么每个 token 的朴素策略梯度损失为：
+
+$$-A_t \cdot \log p_\theta(o_t \mid q, o_{<t})
+$$
+其中：
+- $A_t$：该 token 的优势值（advantage）
+- $p_\theta(o_t \mid q, o_{<t})$：策略（模型）在给定前文下生成第 t 个 token 的概率
+- 负号表示我们在最小化损失，但在强化学习中实际目标是最大化期望奖励
+
+
+#### Problem: compute_naive_policy_gradient_loss 朴素策略梯度损失（Naive Policy Gradient）
+
+任务要求：
+实现一个函数 compute_naive_policy_gradient_loss，用于根据原始奖励（raw rewards）或预先计算好的优势值（advantages）来计算每个 token 的策略梯度损失（policy-gradient loss）。
+
+推荐函数接口：
+```
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+) -> torch.Tensor:
+```
+
+功能说明：
+计算每个 token 的策略梯度损失。
+raw_rewards_or_advantages 表示每个样本的奖励（或已归一化优势值），
+policy_log_probs 表示模型在生成每个 token 时的对数概率。
+
+
+参数说明：
+- raw_rewards_or_advantages：torch.Tensor
+形状为 (batch_size, 1)，表示每个样本对应的标量奖励或优势值。
+- policy_log_probs：torch.Tensor
+形状为 (batch_size, sequence_length)，表示模型在每个时间步生成 token 的对数概率$（log pθ(o_t | q, o_<t)）$。
+
+返回值：
+- loss：torch.Tensor
+形状为 (batch_size, sequence_length)，表示每个 token 的朴素策略梯度损失值。
+在训练循环中通常会对该张量在 batch 与序列维度上取平均或求和，以得到最终的优化目标。
+
+实现提示（Implementation tips）：
+- 将 raw_rewards_or_advantages **广播（broadcast）**到序列长度维度，使其与 policy_log_probs 形状匹配。
+例如：
+
+raw_rewards_or_advantages = raw_rewards_or_advantages.expand_as(policy_log_probs)
+
+- 损失公式如下：
+$$\text{loss} = - A \times \log p_\theta(o_t | q, o_{<t})
+$$即：
+
+$$loss = - raw_rewards_or_advantages * policy_log_probs
+$$
+
+测试方法：
+
+在实现好函数后，实现测试接口 [adapters.run_compute_naive_policy_gradient_loss]，
+然后运行命令：
+```
+uv run pytest -k test_compute_naive_policy_gradient_loss
+```
+确保你的实现通过所有测试。
+
+#### GRPO-Clip loss
+接下来，我们会实现更有趣的GPRO-Clip损失
+
+每个 token 的 GRPO-Clip 损失定义为：
+$$-\min\left( \frac{\pi_\theta(o_t|q, o_{<t})}{\pi_{\theta_{\text{old}}}(o_t|q, o_{<t})} A_t,\ \text{clip}\left(\frac{\pi_\theta(o_t|q, o_{<t})}{\pi_{\theta_{\text{old}}}(o_t|q, o_{<t})},\ 1 - \epsilon,\ 1 + \epsilon\right) A_t \right)$$
+也就是取两者中的最小值，并取负号作为损失。
+- $\pi_\theta$：当前策略下生成该 token 的概率
+- $\pi_{\theta_{\text{old}}}$：旧策略下生成该 token 的概率
+- $A_t$：该样本的优势（advantage）
+- $\epsilon$：clip 参数（通常取 0.2）
+
+
+函数接口说明
+```
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    cliprange: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+```
+参数解释：
+
+|参数名|	类型|	形状|	含义|
+|-|-|-|-|
+|advantages|	torch.Tensor|	(batch_size, 1)|	每个样本对应的优势 A
+|policy_log_probs|	torch.Tensor|	(batch_size, sequence_length)	|当前策略下每个 token 的 log 概率
+old_log_probs|	torch.Tensor|	(batch_size, sequence_length)	|旧策略下每个 token 的 log 概率
+cliprange|	float|	-|	clip 参数 $\epsilon$，如 0.2
+
+
+
+返回值：
+```
+(
+    loss: torch.Tensor,          # (batch_size, sequence_length)
+
+    metadata: dict[str, torch.Tensor]
+)
+```
+- loss：每个 token 的 GRPO-Clip 损失。
+- metadata：一个日志信息字典，推荐记录“哪些 token 被 clip 过”。
+即右侧的 clipped_loss < unclipped_loss 的布尔掩码。
+
+
+实现提示：
+- 将 advantages 在序列维度上广播到与 policy_log_probs 相同的形状。
+
+测试方法
+
+当你实现完 compute_grpo_clip_loss 后，
+要去实现适配器函数 [adapters.run_compute_grpo_clip_loss]，
+然后运行以下命令进行测试：
+```
+uv run pytest -k test_compute_grpo_clip_loss
+```
+
+#### 策略梯度损失封装(Policy gradient loss wrapper)
+我们将进行消融实验，比对三种不同版本的策略损失：
+
+(a) no_baseline：不使用基线的朴素策略梯度损失，即优势函数就是原始奖励
+$A = R(q, o)$
+
+(b) reinforce_with_baseline：使用基线的朴素策略梯度损失，这里的基线是组归一化后的奖励。如果 $\bar r$ 是通过 compute_group_normalized_rewards 得到的组归一化奖励（可能归一化过标准差，也可能没有），则
+$A = \bar r$
+
+(c) grpo_clip：GRPO-Clip 损失。
+
+为了方便，我们将实现一个封装函数，能够轻松地在这三种策略梯度损失之间切换。
+
+
+#### 策略梯度损失封装问题 (compute_policy_gradient_loss)：
+
+交付物：实现 compute_policy_gradient_loss，这是一个便捷的封装函数，用于调用正确的策略梯度损失函数（no_baseline、reinforce_with_baseline 或 grpo_clip），并返回每个 token 的损失以及任何辅助统计信息。
+
+推荐接口如下：
+```
+def compute_policy_gradient_loss(
+    policy_log_probs: torch.Tensor,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,
+    advantages: torch.Tensor | None = None,
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+```
+功能说明：选择并计算所需的策略梯度损失。
+
+参数：
+- policy_log_probs：形状 (batch_size, sequence_length)，训练中策略的每个 token 的对数概率。
+- loss_type：指定损失类型，必须是 "no_baseline"、"reinforce_with_baseline" 或 "grpo_clip"。
+- raw_rewards：当 loss_type == "no_baseline" 时必填，形状 (batch_size, 1)。
+- advantages：当 loss_type 为 "reinforce_with_baseline" 或 "grpo_clip" 时必填，形状 (batch_size, 1)。
+- old_log_probs：当 loss_type == "grpo_clip" 时必填，形状 (batch_size, sequence_length)。
+- cliprange：当 loss_type == "grpo_clip" 时必填，标量 ϵ，用于裁剪。
+
+返回值：
+- loss：形状 (batch_size, sequence_length)，每个 token 的策略梯度损失。
+- metadata：字典，包含底层计算函数的统计信息（例如 GRPO-Clip 的裁剪比例）。
+
+实现提示：
+- 调用 compute_naive_policy_gradient_loss 或 compute_grpo_clip_loss 来完成实际计算。
+- 进行参数检查（参考之前的断言模式）。
+- 将所有返回的 metadata 聚合成一个字典。
+
+测试：
+实现 adapters.run_compute_policy_gradient_loss 后，运行
+```
+uv run pytest -k test_compute_policy_gradient_loss
+```
+确保测试通过。

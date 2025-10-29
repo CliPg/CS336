@@ -193,3 +193,38 @@ $$A_i = \frac{r_i - \text{mean}(r_1, \dots, r_G)}{\text{std}(r_1, \dots, r_G) + 
 2.	仅减去均值（normalize_by_std=False）
 $$A_i = r_i - \text{mean}(r_1, \dots, r_G)
 $$
+
+## GRPO-Clip loss
+
+
+
+PPO 的核心思想是：
+不希望新策略 $π_θ$ 相对于旧策略 $π_{θ_{old}}$ 改变太多。
+换句话说，即使新策略的优势 $A_t$ 很大，也不能让策略更新“太猛”，以避免训练不稳定。
+于是，PPO 定义了这个目标函数的一部分：
+
+$$L^{CLIP}(\theta) = \min\left( r_t(\theta) A_t,\ \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A_t \right)$$
+
+其中：
+
+$$r_t(\theta) = \frac{\pi_\theta(o_t|q, o_{<t})}{\pi_{\theta_{\text{old}}}(o_t|q, o_{<t})}$$
+
+就是新旧策略的概率比。
+
+clip 函数的含义
+
+clip(x, 1 - ε, 1 + ε) 的意思是：
+
+$$\text{clip}(x, 1-\epsilon, 1+\epsilon) =
+\begin{cases}
+1-\epsilon, & x < 1-\epsilon\\
+x, & 1-\epsilon \le x \le 1+\epsilon\\
+1+\epsilon, & x > 1+\epsilon
+\end{cases}$$
+
+
+$$-\min\left( \frac{\pi_\theta(o_t|q, o_{<t})}{\pi_{\theta_{\text{old}}}(o_t|q, o_{<t})} A_t,\ \text{clip}\left(\frac{\pi_\theta(o_t|q, o_{<t})}{\pi_{\theta_{\text{old}}}(o_t|q, o_{<t})},\ 1 - \epsilon,\ 1 + \epsilon\right) A_t \right)$$
+在公式中是新旧两个策略的概率相除，而函数提供的是对数概率，因此我们需要用到指数相减
+$\frac{a}{b} = \exp(\log a - \log b)$
+
+

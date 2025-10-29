@@ -1,5 +1,6 @@
 from typing import Callable, List
 import torch
+from typing_extensions import Literal
 
 def compute_group_normalized_rewards(
     reward_fn : Callable[[str, str], dict[str, float]],
@@ -51,3 +52,84 @@ def compute_group_normalized_rewards(
     }
 
     return advantages_tensor, raw_rewards_tensor, metadata
+
+
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor
+) -> torch.Tensor:
+    """
+    计算每个token的策略梯度损失
+
+    Args:
+        raw_rewards_or_advantages: 表示每个样本的奖励或已归一化的优势值,形状为 (batch_size, 1)
+        policy_log_probs: 表示模型在生成每个token时的对数概率,形状为(batch_size, sequence_length)
+
+    Return:
+        loss: 形状为(batch_size, sequence_length)
+    """
+    # 将raw_rewards_or_advantages的形状广播成policy_log_probs
+    raw_rewards_or_advantages = raw_rewards_or_advantages.expand_as(policy_log_probs)
+    loss = -raw_rewards_or_advantages * policy_log_probs
+    return loss
+
+
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    cliprange: float=0.2,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    
+    ratio = torch.exp(policy_log_probs - old_log_probs)
+    """
+    clip = policy_log_probs / old_log_probs
+    if clip < 1 - cliprange:
+        clip = 1 - cliprange
+    elif clip > 1 + cliprange:
+        clip = 1 + cliprange
+    """
+    clip_ratio = torch.clamp(ratio, 1 - cliprange, 1 + cliprange)
+    advantages =advantages.expand_as(policy_log_probs)
+    unclipped_loss = ratio*advantages
+    clipped_loss = clip_ratio*advantages
+    loss = -torch.min(unclipped_loss, clipped_loss)
+
+    clipped_mask = (clipped_loss < unclipped_loss).float()  # 被clip的为1，否则0
+    metadata = {
+        "clipped_ratio": clipped_mask.mean(),  # 比例（所有token中被clip的平均值）
+        "clipped_mask": clipped_mask,           # 每个token是否被clip
+    }
+    return loss, metadata
+
+
+def compute_policy_gradient_loss(
+    policy_log_probs: torch.Tensor,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,
+    advantages: torch.Tensor | None = None,
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    
+    if loss_type == "no_baseline":
+        assert raw_rewards is not None, "raw_rewards must be provided for no_baseline loss"
+        loss = compute_naive_policy_gradient_loss(raw_rewards, policy_log_probs)
+        metadata = {}
+    elif loss_type == "reinforce_with_baseline":
+        assert advantages is not None, "advantages must be provided for reinforce_with_baseline loss"
+        loss = compute_naive_policy_gradient_loss(advantages, policy_log_probs)
+        metadata = {}
+    elif loss_type == "grpo_clip":
+        assert advantages is not None, "advantages must be provided for grpo_clip loss"
+        assert old_log_probs is not None, "old_log_probs must be provided for grpo_clip loss"
+        assert cliprange is not None, "cliprange must be provided for grpo_clip loss"
+        loss, metadata = compute_grpo_clip_loss(
+            advantages,
+            policy_log_probs,
+            old_log_probs,
+            cliprange,
+        )
+    else:
+        raise ValueError(f"Unsupported loss_type: {loss_type}")
+    return loss, metadata
