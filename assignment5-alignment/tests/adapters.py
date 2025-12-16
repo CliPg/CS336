@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 from cs336_alignment.sft_helper_methods import tokenize_prompt_and_output, compute_entropy, get_response_log_probs, sft_microbatch_train_step, masked_normalize
-from cs336_alignment.grpo_helper_method import compute_group_normalized_rewards, compute_naive_policy_gradient_loss, compute_grpo_clip_loss, compute_policy_gradient_loss
+from cs336_alignment.grpo_helper_method import compute_group_normalized_rewards, compute_naive_policy_gradient_loss, compute_grpo_clip_loss, compute_policy_gradient_loss, masked_mean, grpo_microbatch_train_step
 
 # uv run pytest -k test_tokenize_prompt_and_output
 def run_tokenize_prompt_and_output(
@@ -211,6 +211,7 @@ def run_compute_policy_gradient_loss(
     )
 
 
+# uv run pytest -k test_masked_mean
 def run_masked_mean(tensor: torch.Tensor, mask: torch.Tensor, dim: int | None = None) -> torch.Tensor:
     """Compute the mean of the tensor along a dimension,
     considering only the elements with mask value 1.
@@ -227,7 +228,11 @@ def run_masked_mean(tensor: torch.Tensor, mask: torch.Tensor, dim: int | None = 
         torch.Tensor, the mean of the tensor along the specified
             dimension, considering only the elements with mask value 1.
     """
-    raise NotImplementedError
+    return masked_mean(
+        tensor=tensor,
+        mask=mask,
+        dim=dim
+    )
 
 
 # uv run pytest -k test_sft_microbatch_train_step
@@ -246,7 +251,8 @@ def run_sft_microbatch_train_step(
         normalize_constant=normalize_constant,
     )
 
-    
+
+# uv run pytest -k test_grpo_microbatch_train_step
 def run_grpo_microbatch_train_step(
     policy_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
@@ -283,7 +289,16 @@ def run_grpo_microbatch_train_step(
         tuple[torch.Tensor, dict[str, torch.Tensor]]: 
             the policy gradient loss and its metadata.
     """
-    raise NotImplementedError
+    return grpo_microbatch_train_step(
+        policy_log_probs=policy_log_probs,
+        response_mask=response_mask,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        loss_type=loss_type,
+        raw_rewards=raw_rewards,
+        advantages=advantages,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
 
 
 # uv run pytest -k test_masked_normalize

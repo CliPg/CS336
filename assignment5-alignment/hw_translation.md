@@ -1795,3 +1795,424 @@ def compute_policy_gradient_loss(
 uv run pytest -k test_compute_policy_gradient_loss
 ```
 确保测试通过。
+
+
+#### Masked mean（掩码平均）
+
+到目前为止，我们已经具备了计算 advantages（优势函数）、log probabilities（对数概率）、per-token losses（每个token的损失），以及一些有用统计量（例如每个token的熵、clip比例）的逻辑。
+
+接下来，为了将形状为 (batch_size, sequence_length) 的每token损失张量压缩成一个向量（即每个样本对应一个标量损失），
+我们将对序列维度进行平均运算，但只在掩码为1的位置（即 mask[i, j] == 1 的token）上取平均。
+这些位置对应于response部分的token（即模型生成的回复内容），而不是prompt部分。
+
+在大多数用于LLM强化学习的代码库中，
+对序列长度进行归一化（也就是取平均）是一种标准做法。
+然而，从理论角度来看，这样做是否合理其实并不显然。
+——你可能注意到，在我们之前定义的策略梯度估计公式 (21) 中，并没有出现归一化因子 $\frac{1}{T^{(i)}}$。
+
+我们将首先采用这种标准操作（称为 masked_mean），
+但之后也会测试我们在SFT阶段实现过的另一种方法：masked_normalize。
+
+此外，我们允许指定在哪个维度上进行平均：
+- 如果参数 dim 被指定，则只在该维度上取平均；
+- 如果 dim=None，则会在所有掩码为1的元素上取平均。
+
+这对于计算一些平均统计量（如response部分的平均每token熵、clip比例等）非常有用。
+
+
+#### Problem: masked_mean(掩码平均)（1分）
+
+任务目标：
+实现一个名为 masked_mean 的函数，用于在计算张量平均时，仅考虑掩码为 1 的位置。
+
+函数接口建议如下：
+```
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+) -> torch.Tensor:
+```
+
+
+功能说明：
+在给定维度 dim 上计算 tensor 的平均值，但只包含那些在 mask 中值为 1 的位置。
+
+参数说明：
+- tensor: torch.Tensor
+待计算平均的张量。
+- mask: torch.Tensor
+与 tensor 形状相同；其中值为 1 的位置会被包含在平均计算中。
+- dim: int | None
+指定在哪个维度上计算平均值。
+- 若指定了 dim，则只在该维度上取平均；
+- 若为 None，则在所有掩码为1的元素上取平均。
+
+返回值：
+torch.Tensor
+掩码平均后的结果，其形状应与 tensor.mean(dim) 的结果保持一致。
+
+测试方法：
+实现完 masked_mean 后，
+请在适配器文件中实现 adapters.run_masked_mean，
+然后运行以下命令来测试你的代码是否正确：
+```
+uv run pytest -k test_masked_mean
+```
+确保所有测试均通过。
+
+
+#### GRPO 微批次训练步骤。
+现在我们准备实现 GRPO（Generalized Reinforce with PPO-style Clipping） 的单个微批次训练步骤。
+（回忆一下：对于一个训练 minibatch，如果 gradient_accumulation_steps > 1，我们会在多个 microbatch 上迭代执行训练步骤，以进行梯度累积。）
+
+具体来说，给定原始奖励（raw rewards）或优势函数（advantages）以及对应的对数概率（log probs），我们需要执行以下步骤：
+1.	计算每个 token 的损失（per-token loss）；
+2.	使用前面实现的 masked_mean 方法，对每个样本在序列维度上求平均，从而得到每个样本的一个标量损失；
+3.	在 batch 维度上对这些标量损失求平均，得到整个 batch 的平均损失；
+4.	根据梯度累积设置（gradient_accumulation_steps）对损失进行缩放调整；
+5.	对该损失执行反向传播（backpropagate），以更新模型梯度。
+
+
+#### 问题（grpo_microbatch_train_step）：GRPO 微批次训练步骤（3 分）
+任务目标
+
+实现 GRPO（Generalized Reinforce with PPO-style Clipping） 的单个 微批次（micro-batch）更新步骤，
+包括以下部分：
+- 计算 策略梯度损失（policy-gradient loss），
+- 使用 mask 对损失进行平均，
+- 根据 梯度累积步数（gradient accumulation steps） 进行梯度缩放。
+
+
+推荐函数接口
+```
+def grpo_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,
+    advantages: torch.Tensor | None = None,
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+```
+
+参数说明
+
+|参数名|	类型|	说明|
+|-|-|-|
+policy_log_probs|	(batch_size, sequence_length)|	当前策略模型输出的每个 token 的对数概率。
+response_mask|	(batch_size, sequence_length)|	对响应 token 的掩码：响应位置为 1，提示或填充位置为 0。
+gradient_accumulation_steps|	int|	每次优化器更新前的微批次数，用于梯度累积。
+loss_type|	"no_baseline", "reinforce_with_baseline", "grpo_clip"	|指定使用的损失类型。
+raw_rewards|	(batch_size, 1)	|当 loss_type == "no_baseline" 时所需的原始奖励值。
+advantages|	(batch_size, 1)|	当 loss_type != "no_baseline" 时所需的优势值。
+old_log_probs|	(batch_size, sequence_length)|	仅在 loss_type == "grpo_clip" 时使用，表示旧策略的 log 概率。
+cliprange|	float|	GRPO-Clip 的裁剪参数 ε。
+
+返回值
+
+返回一个二元组：
+```
+(
+    loss: torch.Tensor,           # 微批次损失（标量），已根据梯度累积调整
+    metadata: dict[str, torch.Tensor]  # 包含底层损失函数返回的统计信息
+)
+```
+
+
+实现提示
+1.	调用前面实现的 compute_policy_gradient_loss 函数计算每个 token 的损失；
+2.	使用 masked_mean 在序列维度上（仅针对 response_mask==1 的 token）求平均，得到每个样本的标量损失；
+3.	在 batch 维度上求平均，得到整个 microbatch 的平均损失；
+4.	将损失除以 gradient_accumulation_steps，以适配梯度累积；
+5.	调用 loss.backward() 执行反向传播；
+6.	返回 (loss, metadata)。
+
+
+测试方法
+
+在 adapters.py 中实现：
+
+def run_grpo_microbatch_train_step(): ...
+
+然后运行以下命令验证：
+```
+uv run pytest -k test_grpo_microbatch_train_step
+```
+
+
+#### 整合所有部分：GRPO 训练循环（GRPO Train Loop）
+现在我们要将前面实现的各个模块整合起来，构建一个完整的 GRPO 训练循环（train loop）。
+请参考论文 第 7.1 节 的算法结构，在合适的地方调用你之前实现的函数。
+
+推荐的初始超参数（Starter Hyperparameters）
+```
+n_grpo_steps: int = 200                  # 训练总步数
+learning_rate: float = 1e-5             # 学习率
+advantage_eps: float = 1e-6             # 防止除零的平滑项
+rollout_batch_size: int = 256           # rollout 的批量大小
+group_size: int = 8                     # 每组样本数
+sampling_temperature: float = 1.0       # 采样温度
+sampling_min_tokens: int = 4            # 响应最少 token 数（避免空字符串）
+sampling_max_tokens: int = 1024         # 响应最多 token 数
+epochs_per_rollout_batch: int = 1       # 每个 rollout 批次训练的 epoch 数（on-policy 时为 1）
+train_batch_size: int = 256             # 训练批次大小（on-policy 下与 rollout_batch_size 相同）
+gradient_accumulation_steps: int = 128  # 梯度累积步数（即微批次数）
+gpu_memory_utilization: float = 0.85    # GPU 显存利用率
+loss_type: Literal[
+    "no_baseline",
+    "reinforce_with_baseline",
+    "grpo_clip",
+] = "reinforce_with_baseline"
+use_std_normalization: bool = True
+```
+优化器（推荐配置）：
+```
+optimizer = torch.optim.AdamW(
+    policy.parameters(),
+    lr=learning_rate,
+    weight_decay=0.0,
+    betas=(0.9, 0.95),
+)
+```
+
+默认设置说明
+
+这些默认参数将使你处于 on-policy 设置，即：
+- 每次 rollout 之后，只进行一次梯度更新；
+- 因此有：
+- train_batch_size == rollout_batch_size
+- epochs_per_rollout_batch == 1
+
+
+一些 sanity check 与辅助变量定义
+```
+assert train_batch_size % gradient_accumulation_steps == 0, (
+    "train_batch_size 必须能被 gradient_accumulation_steps 整除"
+)
+micro_train_batch_size = train_batch_size // gradient_accumulation_steps
+
+assert rollout_batch_size % group_size == 0, (
+    "rollout_batch_size 必须能被 group_size 整除"
+)
+n_prompts_per_rollout_batch = rollout_batch_size // group_size
+
+assert train_batch_size >= group_size, (
+    "train_batch_size 必须大于或等于 group_size"
+)
+
+n_microbatches_per_rollout_batch = rollout_batch_size // micro_train_batch_size
+```
+
+
+
+实现提示
+1.	使用 r1_zero 提示词。
+生成时让 vLLM 在第二个 </answer> 标签处停止（如前面的实验那样）。
+2.	使用 typer 进行命令行参数解析，方便调整参数与日志输出。
+3.	启用梯度裁剪（Gradient Clipping）
+建议裁剪阈值为 1.0：
+
+torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+
+4.	定期记录验证奖励（Validation Rewards）
+建议每隔 5 或 10 步进行一次。
+验证集规模应至少为 1024 个样本，因为 CoT/RL 任务中的奖励具有噪声。
+5.	GRPO-Clip 仅适用于 off-policy 设置
+因为它需要旧策略的 log 概率 old_log_probs。
+6.	在 off-policy 多轮更新时复用旧 log 概率
+如果对同一批 rollout 样本进行多次 epoch 更新，没必要每次都重新计算旧的 log 概率，可以计算一次后重复使用。
+7.	不要对旧 log 概率求梯度
+因为它是“旧策略”的输出。
+
+日志建议
+
+在每次优化器更新（optimizer step）时，记录以下信息：
+- 当前 loss（损失）
+- 梯度范数（gradient norm）
+- token 熵（entropy）
+- clip fraction（若为 off-policy）
+- 训练奖励（train rewards）
+- 总奖励
+- 格式奖励
+- 答案奖励
+- 以及任何你认为对调试有帮助的指标
+
+
+#### 问题（grpo_train_loop）：GRPO 训练循环（5 分）
+
+任务要求：
+实现一个完整的 GRPO 训练循环（train loop）。
+在 MATH 数据集 上训练一个策略模型（policy），并验证模型性能是否随训练过程而提升。
+
+交付内容（Deliverable）：
+1.	实现完整的 GRPO 训练循环。
+- 包含数据采样（rollout）、计算奖励（rewards/advantages）、损失计算、反向传播与优化步骤。
+- 可以使用前面实现的模块（如 compute_policy_gradient_loss、masked_mean、grpo_microbatch_train_step 等）。
+2.	开始在 MATH 数据集上训练模型（policy）。
+- 使用论文中推荐的超参数（或上题中提供的默认参数）。
+- 保证能够运行完整训练流程（rollout → loss → backward → optimizer.step）。
+3.	验证性能变化。
+- 观察并确认模型的 验证奖励（validation rewards） 随训练步数提升（即训练有效）。
+- 输出或保存随训练步数变化的验证奖励曲线图。
+4.	提供可视化结果。
+- 绘制 验证奖励随训练步数变化的折线图（plot with validation rewards vs steps）。
+- 展示若干 训练过程中模型生成的示例回答（example rollouts over time），例如训练初期、中期、后期各选几个样本进行对比，说明模型输出质量的变化。
+
+总结：
+你需要编写一个完整的 GRPO 训练循环，确保：
+- 模型可以在 MATH 上收敛；
+- 验证奖励随着训练步数上升；
+- 并提供验证奖励曲线图与若干生成示例作为结果展示。
+
+
+## 8 GRPO 实验
+
+现在我们可以开始对 GRPO 训练循环进行实验，尝试不同的超参数和算法调整。每个实验将使用 2 块 GPU，其中一块用于 vLLM 实例，另一块用于 policy（策略）。
+
+关于提前终止实验的说明：
+如果你在前 200 个 GRPO 步内就已经观察到超参数之间存在明显差异（例如某个配置发散或明显较差），可以提前停止该实验，以节省时间和计算资源。
+下面提到的 GPU 小时数只是一个大致估计。
+
+#### 问题（grpo_learning_rate）：调整学习率（2 分）（约 6 小时 H100 GPU）
+
+从上面建议的超参数开始，进行一次学习率搜索（sweep），并报告最终的验证集奖励（validation reward）。
+如果优化器出现发散，请注明。
+
+需要提交的内容（Deliverables）：
+1.	不同学习率下的 验证集奖励曲线（validation reward curves）；
+2.	一个在 MATH 数据集上验证准确率至少达到 25% 的模型；
+3.	对其他日志指标（如损失、熵、KL 散度等）的趋势，撰写简短的 2 句讨论。
+
+在后续实验中，请使用在此学习率搜索中表现最好的学习率。
+
+基线的影响（Effect of baselines）
+
+在继续使用上述超参数（除了你调优过的学习率）时，我们将研究**基线（baseline）**的影响。
+由于我们处于 on-policy 设置，因此将比较以下两种损失类型：
+- no_baseline（无基线）
+- reinforce_with_baseline（带基线的 REINFORCE）
+
+注意：默认超参数中 use_std_normalization=True。
+
+#### 问题（grpo_baselines）：基线的影响（2 分）（约 2 小时 H100 GPU）
+
+分别用 reinforce_with_baseline 和 no_baseline 训练一个策略模型。
+
+需要提交的内容（Deliverables）：
+1.	两种损失类型下的 验证集奖励曲线；
+2.	对其他日志指标趋势（例如方差、收敛速度等）撰写简短的 2 句讨论。
+
+在后续的实验中，请使用在该实验中表现最好的损失类型（loss type）。
+
+长度归一化（Length Normalization）
+
+正如我们在实现 masked_mean 时暗示的那样，将损失在序列长度上取平均并不是必要的，甚至是不正确的。
+如何在序列维度上求和损失是一个重要的超参数，它会直接影响到策略动作的**信用分配（credit attribution）**方式。
+
+
+我们来看一个来自 Lambert (2024) 的示例来说明这一点。
+在 GRPO 训练步骤 中，我们首先得到每个 token 的策略梯度损失（暂时忽略 clipping）：
+```
+advantages  # (batch_size, 1)
+per_token_probability_ratios  # (batch_size, sequence_length)
+per_token_loss = -advantages * per_token_probability_ratios
+```
+这里我们将 advantages 广播（broadcast）到整个序列长度。
+接下来，我们比较两种对这些 per-token 损失进行聚合（aggregation）的方法：
+1.	使用我们实现的 masked_mean，即对每个序列中未被 mask 的 token 取平均；
+2.	对未被 mask 的 token 求和后，再除以一个常数标量（masked_normalize 支持这种方式，当 constant_normalizer != 1.0 时），参见 [Liu et al., 2025; Yu et al., 2025]。
+
+
+假设我们有一个 batch 大小为 2：
+- 第一个样本的生成结果有 4 个 token；
+- 第二个样本有 7 个 token。
+
+我们可以观察不同归一化方法对梯度的影响。
+```
+from your_utils import masked_mean, masked_normalize
+ratio = torch.tensor([
+    [1, 1, 1, 1, 1, 1, 1,],
+    [1, 1, 1, 1, 1, 1, 1,],
+], requires_grad=True)
+advs = torch.tensor([
+    [2, 2, 2, 2, 2, 2, 2,],
+    [2, 2, 2, 2, 2, 2, 2,],
+])
+masks = torch.tensor([
+    # 第一个样本：4 个 token
+    [1, 1, 1, 1, 0, 0, 0,],
+    # 第二个样本：7 个 token
+    [1, 1, 1, 1, 1, 1, 1,],
+])
+# 使用不同方法进行归一化
+max_gen_len = 7
+masked_mean_result = masked_mean(ratio * advs, masks, dim=1)
+masked_normalize_result = masked_normalize(
+    ratio * advs, masks, dim=1, constant_normalizer=max_gen_len)
+print("masked_mean", masked_mean_result)
+print("masked_normalize", masked_normalize_result)
+```
+输出为：
+```
+masked_mean tensor([2., 2.], grad_fn=<DivBackward0>)
+masked_normalize tensor([1.1429, 2.0000], grad_fn=<DivBackward0>)
+```
+
+然后我们分别对这两种情况进行反向传播，查看梯度变化：
+```
+masked_mean_result.mean().backward()
+print("ratio.grad", ratio.grad)
+```
+输出：
+```
+ratio.grad:
+tensor([
+  [0.2500, 0.2500, 0.2500, 0.2500, 0.0000, 0.0000, 0.0000],
+  [0.1429, 0.1429, 0.1429, 0.1429, 0.1429, 0.1429, 0.1429]
+])
+```
+然后将梯度清零再计算另一种情况：
+```
+ratio.grad.zero_()
+masked_normalize_result.mean().backward()
+print("ratio.grad", ratio.grad)
+```
+输出：
+```
+ratio.grad:
+tensor([
+  [0.1429, 0.1429, 0.1429, 0.1429, 0.0000, 0.0000, 0.0000],
+  [0.1429, 0.1429, 0.1429, 0.1429, 0.1429, 0.1429, 0.1429]
+])
+```
+
+
+解释
+- 当使用 masked_mean 时，每个序列内部的损失被平均化，因此短序列的每个 token 获得了更高的梯度权重；
+- 当使用 masked_normalize 且除以固定常数（max_gen_len）时，所有序列的梯度规模更接近，从而降低了短序列的相对影响力；
+- 这种差异会影响策略学习中credit assignment 的平衡性。
+
+
+#### 问题（考虑长度归一化）：思考长度归一化的问题（1分）
+交付内容：比较两种方法（先不用实际运行实验）。它们各自的优缺点是什么？在什么特定场景或例子下，某种方法似乎更优？
+现在，让我们从经验上比较 masked_mean 和 masked_normalize。
+
+#### 问题（GRPO长度归一化）：长度归一化的效果（2分）（约2小时）
+交付内容：在一次端到端的 GRPO 训练中比较归一化方法，即 masked_mean 与 masked_normalize。报告验证集上答案奖励的曲线。评论实验结果，包括其他可能出现显著趋势的指标。
+提示：可以考虑与稳定性相关的指标，例如梯度范数（gradient norm）。
+在后续实验中，固定表现更好的长度归一化方法。
+
+
+#### 使用组标准差进行归一化
+回顾我们标准的 compute_group_normalized_rewards 实现（基于 Shao 等 [2024]，DeepSeek-AI 等 [2025]），其中我们使用组内标准差进行归一化。
+Liu 等 [2025] 指出，除以组标准差可能会给训练过程引入不希望的偏差：对于标准差较低的问题（例如非常简单或非常难的问题，奖励几乎全为1或全为0），训练时会被赋予更高的权重。
+Liu 等 [2025] 提出移除标准差归一化，这一方法我们已在 compute_group_normalized_rewards 中实现，现在将进行测试。
+
+
+#### 问题（GRPO组标准差归一化）：标准差归一化的效果（2分）（约2小时）
+交付内容：比较 use_std_normalization == True 与 use_std_normalization == False 的性能。报告验证集上答案奖励曲线，并评论实验结果，包括其他可能出现显著趋势的指标。
+提示：可以考虑与稳定性相关的指标，例如梯度范数。
+在后续实验中，固定表现更好的组归一化方法。
